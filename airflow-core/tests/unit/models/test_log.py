@@ -32,7 +32,7 @@ class TestLogTaskInstanceJoin:
         """Test that the join condition correctly handles same task_id in different DAGs."""
         # Create dag_1 with a task
         with dag_maker("dag_1", session=session):
-            task1 = EmptyOperator(task_id="common_task_id")
+            EmptyOperator(task_id="common_task_id")
 
         dr1 = dag_maker.create_dagrun()
         ti1 = dr1.get_task_instance("common_task_id")
@@ -42,7 +42,7 @@ class TestLogTaskInstanceJoin:
 
         # Create dag_2 with the SAME task_id
         with dag_maker("dag_2", session=session):
-            task2 = EmptyOperator(task_id="common_task_id")
+            EmptyOperator(task_id="common_task_id")
 
         dr2 = dag_maker.create_dagrun()
         ti2 = dr2.get_task_instance("common_task_id")
