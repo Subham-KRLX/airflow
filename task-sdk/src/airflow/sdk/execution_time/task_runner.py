@@ -1251,7 +1251,10 @@ def run(
     signal.signal(signal.SIGTERM, _on_term)
 
     msg: ToSupervisor | None = None
-    state: TaskInstanceState
+    # Initialize state to FAILED so the finally block always has a valid value,
+    # even if an exception is raised before state is explicitly set (e.g. a COMMS
+    # failure inside a DagRunTriggerException handler).
+    state: TaskInstanceState = TaskInstanceState.FAILED
     error: BaseException | None = None
 
     stats_tags = {"dag_id": ti.dag_id, "task_id": ti.task_id}
