@@ -25,11 +25,11 @@ import { usePluginServiceGetPlugins } from "openapi/queries";
 import type { ReactAppResponse } from "openapi/requests/types.gen";
 import { ReactPlugin } from "src/pages/ReactPlugin";
 import { useConfig } from "src/queries/useConfig";
+import { useDocumentTitle } from "src/utils";
 
 import { Nav } from "./Nav";
 
 export const BaseLayout = ({ children }: PropsWithChildren) => {
-  const instanceName = useConfig("instance_name");
   const { i18n } = useTranslation();
   const { data: pluginData } = usePluginServiceGetPlugins();
   const theme = useConfig("theme") as unknown as { icon?: string; icon_dark_mode?: string } | undefined;
@@ -39,9 +39,7 @@ export const BaseLayout = ({ children }: PropsWithChildren) => {
       .flatMap((plugin) => plugin.react_apps)
       .filter((reactApp: ReactAppResponse) => reactApp.destination === "base") ?? [];
 
-  if (typeof instanceName === "string") {
-    document.title = instanceName;
-  }
+  useDocumentTitle();
 
   useEffect(() => {
     const html = document.documentElement;
