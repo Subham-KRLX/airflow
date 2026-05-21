@@ -25,7 +25,6 @@ import { usePluginServiceGetPlugins } from "openapi/queries";
 import type { ReactAppResponse } from "openapi/requests/types.gen";
 import { ReactPlugin } from "src/pages/ReactPlugin";
 import { useConfig } from "src/queries/useConfig";
-import { useDocumentTitle } from "src/utils";
 
 import { Nav } from "./Nav";
 
@@ -39,7 +38,6 @@ export const BaseLayout = ({ children }: PropsWithChildren) => {
       .flatMap((plugin) => plugin.react_apps)
       .filter((reactApp: ReactAppResponse) => reactApp.destination === "base") ?? [];
 
-  useDocumentTitle();
 
   useEffect(() => {
     const html = document.documentElement;

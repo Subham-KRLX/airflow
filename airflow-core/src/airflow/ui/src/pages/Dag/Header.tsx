@@ -32,7 +32,6 @@ import DisplayMarkdownButton from "src/components/DisplayMarkdownButton";
 import { HeaderCard } from "src/components/HeaderCard";
 import { TogglePause } from "src/components/TogglePause";
 import { RouterLink } from "src/components/ui";
-import { useDocumentTitle } from "src/utils";
 
 import { DagOwners } from "../DagsList/DagOwners";
 import { DagTags } from "../DagsList/DagTags";
@@ -60,8 +59,6 @@ export const Header = ({
   // We would still like to show the dagId even if the dag object hasn't loaded yet
   const { dagId } = useParams();
   const isStale = dag?.is_stale;
-
-  useDocumentTitle(dag?.dag_display_name ?? dagId);
 
   const nextRunStat = isStale
     ? []

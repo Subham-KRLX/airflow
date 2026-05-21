@@ -25,12 +25,14 @@ export const useDocumentTitle = (pageTitle?: string | null) => {
   const instanceName = typeof instanceConfig === "string" ? instanceConfig : "Airflow";
 
   useEffect(() => {
-    const hasPageTitle = typeof pageTitle === "string" && pageTitle.length > 0;
+    const previousTitle = document.title;
 
-    document.title = hasPageTitle ? `${pageTitle} - ${instanceName}` : instanceName;
+    if (typeof pageTitle === "string" && pageTitle.length > 0) {
+      document.title = `${pageTitle} - ${instanceName}`;
+    }
 
     return () => {
-      document.title = instanceName;
+      document.title = previousTitle;
     };
   }, [pageTitle, instanceName]);
 };
