@@ -38,7 +38,6 @@ export const BaseLayout = ({ children }: PropsWithChildren) => {
       .flatMap((plugin) => plugin.react_apps)
       .filter((reactApp: ReactAppResponse) => reactApp.destination === "base") ?? [];
 
-
   useEffect(() => {
     const html = document.documentElement;
 
