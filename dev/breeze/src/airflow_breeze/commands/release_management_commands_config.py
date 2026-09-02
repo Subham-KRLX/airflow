@@ -42,6 +42,7 @@ RELEASE_PROVIDERS_COMMANDS: dict[str, str | list[str]] = {
     "name": "Providers release commands",
     "commands": [
         "prepare-provider-documentation",
+        "classify-provider-changes",
         "update-providers-next-version",
         "prepare-provider-distributions",
         "install-provider-distributions",
@@ -85,6 +86,7 @@ RELEASE_OTHER_COMMANDS: dict[str, str | list[str]] = {
         "generate-constraints",
         "update-constraints",
         "publish-docs-to-s3",
+        "publish-schemas-to-s3",
         "verify-rc-by-pmc",
         "check-release-files",
     ],
@@ -251,6 +253,7 @@ RELEASE_MANAGEMENT_PARAMETERS: dict[str, list[dict[str, str | list[str]]]] = {
                 "--distribution-format",
                 "--distributions-list-file",
                 "--skip-deleting-generated-files",
+                "--skip-git-fetch",
                 "--skip-tag-check",
                 "--version-suffix",
                 "--distributions-list",
@@ -263,6 +266,24 @@ RELEASE_MANAGEMENT_PARAMETERS: dict[str, list[dict[str, str | list[str]]]] = {
             "options": [
                 "--clean-tags",
                 "--release-date",
+            ],
+        },
+    ],
+    "breeze release-management classify-provider-changes": [
+        {
+            "name": "Classification options",
+            "options": [
+                "--base-branch",
+                "--skip-git-fetch",
+                "--github-repository",
+                "--output-file",
+            ],
+        },
+        {
+            "name": "Select non-regular providers",
+            "options": [
+                "--include-not-ready-providers",
+                "--include-removed-providers",
             ],
         },
     ],
@@ -319,6 +340,7 @@ RELEASE_MANAGEMENT_PARAMETERS: dict[str, list[dict[str, str | list[str]]]] = {
             "name": "Generate constraints flags",
             "options": [
                 "--airflow-constraints-mode",
+                "--allow-pre-releases",
                 "--github-repository",
                 "--python",
                 "--use-uv",
@@ -541,6 +563,18 @@ RELEASE_MANAGEMENT_PARAMETERS: dict[str, list[dict[str, str | list[str]]]] = {
                 "--stable-versions",
                 "--publish-all-docs",
                 "--skip-write-to-stable-folder",
+            ],
+        }
+    ],
+    "breeze release-management publish-schemas-to-s3": [
+        {
+            "name": "Publish schemas to S3",
+            "options": [
+                "--execution-api",
+                "--supervisor",
+                "--destination-location",
+                "--overwrite",
+                "--dry-run",
             ],
         }
     ],

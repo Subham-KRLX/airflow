@@ -39,6 +39,7 @@ from airflow.executors.workloads.callback import CallbackFetchMethod
 from airflow.models import Base
 from airflow.models.base import StringID
 from airflow.models.dagbundle import DagBundleModel
+from airflow.utils.helpers import prune_dict
 from airflow.utils.sqlalchemy import ExtendedJSON, UtcDateTime
 from airflow.utils.state import CallbackState
 
@@ -101,6 +102,13 @@ class ImportPathExecutorCallbackDefProtocol(ImportPathCallbackDefProtocol, Proto
     executor: str | None
 
 
+@runtime_checkable
+class ImportPathAsyncCallbackDefProtocol(ImportPathCallbackDefProtocol, Protocol):
+    """Protocol for callbacks that use the import path fetch method and support trigger queue assignment."""
+
+    queue: str | None
+
+
 class Callback(Base, BaseWorkload):
     """Base class for callbacks."""
 
@@ -156,7 +164,7 @@ class Callback(Base, BaseWorkload):
     def queue(self, *, session: Session) -> None:
         self.state = CallbackState.QUEUED
 
-    def get_metric_info(self, status: CallbackState, result: Any) -> dict:
+    def get_metric_info(self, status: CallbackState, result: Any, team_name: str | None = None) -> dict:
         tags = {"result": result, **self.data}
         tags.pop("prefix", None)
 
@@ -177,6 +185,10 @@ class Callback(Base, BaseWorkload):
             for k, v in tags.items()
         }
 
+        # team_name is omitted entirely when not in a multi-team deployment or when the
+        # callback's bundle is not mapped to a team.
+        tags = prune_dict({**tags, "team_name": team_name})
+
         prefix = self.data.get("prefix", "")
         name = f"{prefix}.callback_{status}" if prefix else f"callback_{status}"
 
@@ -196,7 +208,7 @@ class Callback(Base, BaseWorkload):
         match type(callback_def).__name__:
             case "AsyncCallback":
                 if TYPE_CHECKING:
-                    assert isinstance(callback_def, ImportPathCallbackDefProtocol)
+                    assert isinstance(callback_def, ImportPathAsyncCallbackDefProtocol)
                 return TriggererCallback(callback_def, **kwargs)
 
             case "SyncCallback":
@@ -239,6 +251,7 @@ class TriggererCallback(Callback):
             CallbackTrigger(
                 callback_path=self.data["path"],
                 callback_kwargs=self.data["kwargs"],
+                queue=self.data.get("queue"),
             )
         )
         self.trigger.team_name = team_name
@@ -250,9 +263,12 @@ class TriggererCallback(Callback):
         if (status := event.payload.get(PAYLOAD_STATUS_KEY)) and status in (ACTIVE_STATES | TERMINAL_STATES):
             self.state = status
             if status in TERMINAL_STATES:
+                team_name: str | None = None
+                if self.bundle_name and conf.getboolean("core", "multi_team"):
+                    team_name = DagBundleModel.get_team_name(self.bundle_name, session=session)
                 self.trigger = None
                 self.output = event.payload.get(PAYLOAD_BODY_KEY)
-                stats.incr(**self.get_metric_info(status, self.output))
+                stats.incr(**self.get_metric_info(status, self.output, team_name=team_name))
 
             session.add(self)
         else:

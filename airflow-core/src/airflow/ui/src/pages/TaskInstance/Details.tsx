@@ -16,7 +16,9 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { Box, Flex, HStack, Table } from "@chakra-ui/react";
+import type { ReactNode } from "react";
+
+import { Box, Flex, Heading, HStack, Table } from "@chakra-ui/react";
 import { useTranslation } from "react-i18next";
 import { useParams, useSearchParams } from "react-router-dom";
 
@@ -24,12 +26,18 @@ import {
   useTaskInstanceServiceGetMappedTaskInstance,
   useTaskInstanceServiceGetTaskInstanceTryDetails,
 } from "openapi/queries";
+
+import { ClipboardRoot, ClipboardIconButton } from "src/system-components";
+
 import { DagVersionDetails } from "src/components/DagVersionDetails";
+import RenderedJsonField from "src/components/RenderedJsonField";
 import { StateBadge } from "src/components/StateBadge";
 import { TaskTrySelect } from "src/components/TaskTrySelect";
+import { TeamName } from "src/components/TeamName";
 import Time from "src/components/Time";
-import { ClipboardRoot, ClipboardIconButton } from "src/components/ui";
+
 import { SearchParamsKeys } from "src/constants/searchParams";
+import { useShowTeam } from "src/hooks/useShowTeam";
 import { useAutoRefresh, isStatePending, renderDuration } from "src/utils";
 
 import { BlockingDeps } from "./BlockingDeps";
@@ -57,6 +65,8 @@ export const Details = () => {
     },
   );
 
+  const showTeam = useShowTeam(taskInstance?.team_name);
+
   const onSelectTryNumber = (newTryNumber: number) => {
     if (newTryNumber === taskInstance?.try_number) {
       searchParams.delete(SearchParamsKeys.TRY_NUMBER);
@@ -83,6 +93,40 @@ export const Details = () => {
       refetchInterval: (query) => (isStatePending(query.state.data?.state) ? refetchInterval : false),
     },
   );
+
+  const renderValue = (value: unknown): ReactNode => {
+    if (value === null || value === undefined || value === "") {
+      return translate("common:none", { defaultValue: "None" });
+    }
+
+    if (typeof value === "object") {
+      return <RenderedJsonField content={value} />;
+    }
+
+    if (typeof value === "string") {
+      return value;
+    }
+
+    if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+      return value.toString();
+    }
+
+    return translate("common:none", { defaultValue: "None" });
+  };
+
+  // omit kwargs from trigger
+  const triggerWithoutKwargs = taskInstance?.trigger
+    ? (({ kwargs, ...rest }) => rest)(taskInstance.trigger)
+    : undefined;
+
+  const rawTaskInstanceDetails: Array<{ label: string; value: unknown }> = [
+    { label: translate("taskInstance.id"), value: taskInstance?.id },
+    { label: translate("tryNumber"), value: tryInstance?.try_number },
+    { label: translate("taskInstance.maxTries"), value: tryInstance?.max_tries },
+    { label: translate("dagId"), value: tryInstance?.dag_id },
+    { label: translate("taskInstance.trigger"), value: triggerWithoutKwargs },
+    { label: translate("taskInstance.triggerer.job"), value: taskInstance?.triggerer_job },
+  ];
 
   return (
     <Box p={2}>
@@ -143,6 +187,14 @@ export const Details = () => {
             <Table.Cell>{translate("mapIndex")}</Table.Cell>
             <Table.Cell>{tryInstance?.map_index}</Table.Cell>
           </Table.Row>
+          {showTeam ? (
+            <Table.Row>
+              <Table.Cell>{translate("dagDetails.team")}</Table.Cell>
+              <Table.Cell>
+                <TeamName teamName={taskInstance?.team_name} />
+              </Table.Cell>
+            </Table.Row>
+          ) : undefined}
           <Table.Row>
             <Table.Cell>{translate("task.operator")}</Table.Cell>
             <Table.Cell>{tryInstance?.operator_name}</Table.Cell>
@@ -225,6 +277,31 @@ export const Details = () => {
           </Table.Row>
         </Table.Body>
       </Table.Root>
+      <Box mt={6}>
+        <Heading as="h3" mb={3} size="sm">
+          {translate("taskInstance.additionalAttributes")}
+        </Heading>
+
+        <Table.Root striped>
+          <Table.Body>
+            {rawTaskInstanceDetails.map(({ label, value }) => {
+              const isObject = typeof value === "object" && value !== null;
+
+              return (
+                <Table.Row key={label}>
+                  <Table.Cell>{label}</Table.Cell>
+                  <Table.Cell
+                    fontFamily={isObject ? undefined : "mono"}
+                    whiteSpace={isObject ? undefined : "pre-wrap"}
+                  >
+                    {renderValue(value)}
+                  </Table.Cell>
+                </Table.Row>
+              );
+            })}
+          </Table.Body>
+        </Table.Root>
+      </Box>
     </Box>
   );
 };

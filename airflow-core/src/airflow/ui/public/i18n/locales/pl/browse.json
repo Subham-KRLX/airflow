@@ -8,8 +8,27 @@
     },
     "filters": {
       "eventType": "Typ zdarzenia"
+    }
+  },
+  "deadlines": {
+    "columns": {
+      "alertName": "Nazwa alertu",
+      "deadlineTime": "Czas terminu",
+      "status": "Stan"
     },
-    "title": "Dziennik audytu"
+    "deadline_few": "Terminy",
+    "deadline_many": "Terminów",
+    "deadline_one": "Termin",
+    "deadline_other": "Terminów",
+    "filters": {
+      "status": "Stan",
+      "statusOptions": {
+        "all": "Wszystkie",
+        "missed": "Niedotrzymane",
+        "pending": "Oczekujące"
+      }
+    },
+    "title": "Terminy"
   },
   "xcom": {
     "add": {

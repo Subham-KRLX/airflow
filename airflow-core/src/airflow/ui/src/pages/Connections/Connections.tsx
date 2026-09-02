@@ -16,27 +16,36 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { Flex, HStack, Spacer, VStack } from "@chakra-ui/react";
+import { useState } from "react";
+
+import { Flex } from "@chakra-ui/react";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { TFunction } from "i18next";
-import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useSearchParams } from "react-router-dom";
 
 import { useConnectionServiceGetConnections } from "openapi/queries";
 import type { ConnectionResponse } from "openapi/requests/types.gen";
+
+import { Tooltip, ActionBar } from "src/system-components";
+
 import { DataTable } from "src/components/DataTable";
-import { useRowSelection, type GetColumnsParams } from "src/components/DataTable/useRowSelection";
+import {
+  SelectionHeaderCheckbox,
+  SelectionProvider,
+  SelectionRowCheckbox,
+  useRowSelection,
+  type GetColumnsParams,
+} from "src/components/DataTable/useRowSelection";
 import { useTableURLState } from "src/components/DataTable/useTableUrlState";
 import { ErrorAlert } from "src/components/ErrorAlert";
 import { SearchBar } from "src/components/SearchBar";
-import { Tooltip } from "src/components/ui";
-import { ActionBar } from "src/components/ui/ActionBar";
-import { Checkbox } from "src/components/ui/Checkbox";
+
 import { SearchParamsKeys, type SearchParamsKeysType } from "src/constants/searchParams";
 import { useAdvancedSearch } from "src/hooks/useAdvancedSearch";
 import { useConfig } from "src/queries/useConfig.tsx";
 import { useConnectionTypeMeta } from "src/queries/useConnectionTypeMeta";
+import { useDocumentTitle } from "src/utils";
 
 import AddConnectionButton from "./AddConnectionButton";
 import DeleteConnectionButton from "./DeleteConnectionButton";
@@ -59,32 +68,20 @@ export type ConnectionBody = {
 };
 
 const getColumns = ({
-  allRowsSelected,
+  hasSelection,
   multiTeam,
-  onRowSelect,
-  onSelectAll,
-  selectedRows,
   translate,
-}: { translate: TFunction } & GetColumnsParams): Array<ColumnDef<ConnectionResponse>> => {
+}: {
+  hasSelection: boolean;
+  translate: TFunction;
+} & GetColumnsParams): Array<ColumnDef<ConnectionResponse>> => {
   const columns: Array<ColumnDef<ConnectionResponse>> = [
     {
       accessorKey: "select",
-      cell: ({ row }) => (
-        <Checkbox
-          borderWidth={1}
-          checked={selectedRows.get(row.original.connection_id)}
-          onCheckedChange={(event) => onRowSelect(row.original.connection_id, Boolean(event.checked))}
-        />
-      ),
+      cell: ({ row }) => <SelectionRowCheckbox rowKey={row.original.connection_id} />,
       enableHiding: false,
       enableSorting: false,
-      header: () => (
-        <Checkbox
-          borderWidth={1}
-          checked={allRowsSelected}
-          onCheckedChange={(event) => onSelectAll(Boolean(event.checked))}
-        />
-      ),
+      header: () => <SelectionHeaderCheckbox />,
       meta: {
         skeletonWidth: 10,
       },
@@ -122,8 +119,8 @@ const getColumns = ({
       cell: ({ row: { original } }) => (
         <Flex justifyContent="end">
           <TestConnectionButton connection={original} />
-          <EditConnectionButton connection={original} disabled={selectedRows.size > 0} />
-          <DeleteConnectionButton connectionId={original.connection_id} disabled={selectedRows.size > 0} />
+          <EditConnectionButton connection={original} disabled={hasSelection} />
+          <DeleteConnectionButton connectionId={original.connection_id} disabled={hasSelection} />
         </Flex>
       ),
       enableSorting: false,
@@ -139,6 +136,9 @@ const getColumns = ({
 
 export const Connections = () => {
   const { t: translate } = useTranslation(["admin", "common"]);
+
+  useDocumentTitle(translate("common:admin.Connections"));
+
   const { setTableURLState, tableURLState } = useTableURLState();
   const [searchParams, setSearchParams] = useSearchParams();
   const { NAME_PATTERN, OFFSET }: SearchParamsKeysType = SearchParamsKeys;
@@ -166,11 +166,8 @@ export const Connections = () => {
     });
 
   const columns = getColumns({
-    allRowsSelected,
+    hasSelection: selectedRows.size > 0,
     multiTeam: multiTeamEnabled,
-    onRowSelect: handleRowSelect,
-    onSelectAll: handleSelectAll,
-    selectedRows,
     translate,
   });
 
@@ -190,30 +187,31 @@ export const Connections = () => {
   };
 
   return (
-    <>
-      <VStack alignItems="none">
-        <SearchBar
-          advancedSearch={advancedSearch}
-          defaultValue={connectionIdPattern ?? ""}
-          onChange={handleSearchChange}
-          placeholder={translate("connections.searchPlaceholder")}
-        />
-        <HStack gap={4} mt={2}>
-          <Spacer />
-          <AddConnectionButton />
-        </HStack>
-      </VStack>
-
+    <SelectionProvider
+      allRowsSelected={allRowsSelected}
+      onRowSelect={handleRowSelect}
+      onSelectAll={handleSelectAll}
+      selectedRows={selectedRows}
+    >
       <DataTable
         columns={columns}
         data={data?.connections ?? []}
         errorMessage={<ErrorAlert error={error} />}
+        filterActions={
+          <SearchBar
+            advancedSearch={advancedSearch}
+            defaultValue={connectionIdPattern ?? ""}
+            onChange={handleSearchChange}
+            placeholder={translate("connections.searchPlaceholder")}
+          />
+        }
         initialState={tableURLState}
         isFetching={isFetching}
         isLoading={isLoading}
         modelName="admin:connections.connection"
         noRowsMessage={<NothingFoundInfo />}
         onStateChange={setTableURLState}
+        primaryActions={<AddConnectionButton />}
         total={data?.total_entries ?? 0}
       />
       <ActionBar.Root closeOnInteractOutside={false} open={Boolean(selectedRows.size)}>
@@ -231,6 +229,6 @@ export const Connections = () => {
           <ActionBar.CloseTrigger onClick={clearSelections} />
         </ActionBar.Content>
       </ActionBar.Root>
-    </>
+    </SelectionProvider>
   );
 };

@@ -50,7 +50,7 @@ TEST_DAG_DISPLAY_NAME = "example_simplest_dag"
 
 @pytest.fixture
 def real_dag_bag():
-    return parse_and_sync_to_db(EXAMPLE_DAG_FILE, include_examples=False)
+    return parse_and_sync_to_db(EXAMPLE_DAG_FILE)
 
 
 @pytest.fixture
@@ -181,6 +181,18 @@ class TestGetDAGSource:
         url = f"{API_PREFIX}/{wrong_fileloc}"
         response = test_client.get(url, headers={"Accept": "application/json"})
         assert response.status_code == 404
+
+    def test_should_respond_404_for_version_number_zero(self, test_client, test_dag):
+        """version_number=0 is a real filter that matches nothing, not a fallback to the latest version."""
+        response = test_client.get(
+            f"{API_PREFIX}/{TEST_DAG_ID}",
+            params={"version_number": 0},
+            headers={"Accept": "application/json"},
+        )
+        assert response.status_code == 404
+        assert response.json() == {
+            "detail": f"The source code of the Dag {TEST_DAG_ID}, version_number 0 was not found"
+        }
 
     @pytest.fixture
     def colocated_unreadable_dag(self, session, test_dag):

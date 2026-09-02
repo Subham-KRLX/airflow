@@ -16,7 +16,8 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { useEffect } from "react";
+import { useEffect, type ReactNode } from "react";
+
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate } from "react-router-dom";
 
@@ -30,7 +31,7 @@ export type HITLQueryParams = {
 };
 
 export type TabItem = {
-  icon: React.ReactNode;
+  icon: ReactNode;
   label: string;
   value: string;
 };
@@ -83,7 +84,9 @@ export const useRequiredActionTabs = (
   const hasHitlData = (hitlData?.total_entries ?? 0) > 0;
   const pendingActionsCount =
     hitlData?.hitl_details.filter(
-      (hitl) => hitl.task_instance.state === "deferred" && !hitl.response_received,
+      (hitl) =>
+        (hitl.task_instance.state === "deferred" || hitl.task_instance.state === "awaiting_input") &&
+        !hitl.response_received,
     ).length ?? 0;
 
   const processedTabs = tabs

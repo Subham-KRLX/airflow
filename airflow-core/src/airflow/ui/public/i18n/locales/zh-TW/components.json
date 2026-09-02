@@ -7,14 +7,25 @@
     "backwards": "反向執行",
     "dateRange": "日期範圍",
     "errorStartDateBeforeEndDate": "開始日期必須早於結束日期。",
+    "exceptionReason": {
+      "alreadyExists": "已存在",
+      "inFlight": "進行中",
+      "unknown": "未知"
+    },
     "maxRuns": "活躍執行數上限",
     "missingAndErroredRuns": "遺漏和錯誤的執行",
     "missingRuns": "遺漏的執行",
+    "notCreatedReason": "未建立原因",
     "overrideExistingParams": "覆寫既有執行的參數",
+    "partitionRange": "分區範圍",
+    "partitionsAffected_one": "將會回填 1 個分區：",
+    "partitionsAffected_other": "將會回填 {{count}} 個分區：",
+    "partitionsNone": "無符合所選範圍的分區。",
     "permissionDenied": "試執行失敗：使用者沒有建立回填的權限。",
     "reprocessBehavior": "重新處理行為",
     "run": "執行回填",
     "scheduleNotBackfillable": "此 Dag 的排程不支援回填",
+    "schedulerPriorityHint": "在每個排程器週期中，回填的 Dag 執行排序會在非回填的 Dag 執行之後。若存在其他非回填的執行，回填執行可能會在排隊中停留較久。",
     "selectDescription": "為指定的日期範圍補上 Dag 執行",
     "selectLabel": "回填",
     "title": "執行回填",
@@ -28,7 +39,8 @@
     "validation": {
       "datesRequired": "必須提供資料區間的開始與結束日期。",
       "startBeforeEnd": "資料區間起始日期必須早於或等於結束日期。"
-    }
+    },
+    "viewSlots": "檢視回填 #{{id}} 的配額"
   },
   "banner": {
     "backfillInProgress": "回填正在進行中",
@@ -64,6 +76,7 @@
     "lastDagRun_other": "最近 {{count}} 次 Dag 執行",
     "lastTaskInstance_one": "最近 1 次任務實例",
     "lastTaskInstance_other": "最近 {{count}} 次任務實例",
+    "medianTotalDuration": "總計: {{duration}}",
     "queuedDuration": "排隊等候時間",
     "runAfter": "最早可執行時間",
     "runDuration": "執行持續時間"
@@ -72,6 +85,7 @@
     "files_other": "{{count}} 個檔案"
   },
   "flexibleForm": {
+    "durationPlaceholder": "請以 ISO 8601 格式輸入持續時間",
     "placeholder": "請選擇一個值",
     "placeholderArray": "請逐行輸入，每行輸入一個字串",
     "placeholderExamples": "開始輸入以查看選項",
@@ -79,6 +93,7 @@
     "validationErrorArrayNotArray": "值必須是陣列格式。",
     "validationErrorArrayNotNumbers": "陣列中的所有元素都必須是數字。",
     "validationErrorArrayNotObject": "陣列中的所有元素都必須是物件。",
+    "validationErrorDuration": "無效的 ISO 8601 持續時間格式",
     "validationErrorRequired": "此為必填欄位"
   },
   "graph": {
@@ -108,7 +123,15 @@
     "file": "檔案",
     "location": "第 {{line}} 行，位於 {{name}}"
   },
+  "passwordToggle": {
+    "hide": "隱藏值",
+    "show": "顯示值"
+  },
   "reparseDag": "重新解析 Dag",
+  "slowestTaskInstances": {
+    "empty": "此範圍內沒有已完成的任務實例",
+    "title": "最慢的任務實例"
+  },
   "sortedAscending": "遞增排序",
   "sortedDescending": "遞減排序",
   "sortedUnsorted": "未排序",
@@ -126,13 +149,14 @@
   "triggerDag": {
     "button": "觸發",
     "dataInterval": "資料區間",
-    "dataIntervalAuto": "依邏輯日期與時間表推斷",
+    "dataIntervalAuto": "依邏輯日期與排程規則推斷",
     "dataIntervalManual": "手動指定",
     "intervalEnd": "結束",
     "intervalStart": "開始",
     "loading": "正在載入 Dag 資訊...",
     "loadingFailed": "載入 Dag 資訊失敗，請重試。",
     "manualRunDenied": "此 Dag 不允許手動執行",
+    "partitionKeyHelp": "選填 - 僅適用於分區的 Dag",
     "runIdHelp": "選填 - 若未提供將會自動產生",
     "selectDescription": "觸發此 Dag 單次執行",
     "selectLabel": "單次執行",

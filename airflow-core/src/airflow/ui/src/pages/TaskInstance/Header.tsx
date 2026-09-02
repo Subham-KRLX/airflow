@@ -16,24 +16,31 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { Box } from "@chakra-ui/react";
 import { useState } from "react";
+
+import { Box } from "@chakra-ui/react";
 import { useTranslation } from "react-i18next";
 import { MdOutlineTask } from "react-icons/md";
 
 import type { TaskInstanceResponse } from "openapi/requests/types.gen";
+
 import { ClearTaskInstanceButton } from "src/components/Clear";
 import ClearTaskInstanceDialog from "src/components/Clear/TaskInstance/ClearTaskInstanceDialog";
 import { DagVersion } from "src/components/DagVersion";
-import EditableMarkdownButton from "src/components/EditableMarkdownButton";
 import { HeaderCard } from "src/components/HeaderCard";
 import { MarkTaskInstanceAsButton } from "src/components/MarkAs";
+import { NotePreview } from "src/components/NotePreview";
+import { TeamName } from "src/components/TeamName";
 import Time from "src/components/Time";
-import { usePatchTaskInstance } from "src/queries/usePatchTaskInstance";
+
+import { useShowTeam } from "src/hooks/useShowTeam";
+import { useTaskInstanceNote } from "src/queries/useTaskInstanceNote";
 import { getDuration, renderDuration } from "src/utils";
 
 export const Header = ({ taskInstance }: { readonly taskInstance: TaskInstanceResponse }) => {
   const { t: translate } = useTranslation();
+  const { isPending, note, onOpen, onSave, setNote } = useTaskInstanceNote(taskInstance);
+  const showTeam = useShowTeam(taskInstance.team_name);
 
   const stats = [
     { label: translate("task.operator"), value: taskInstance.operator_name },
@@ -55,71 +62,51 @@ export const Header = ({ taskInstance }: { readonly taskInstance: TaskInstanceRe
           },
         ]
       : []),
+    ...(showTeam
+      ? [
+          {
+            label: translate("dagDetails.team"),
+            value: <TeamName teamName={taskInstance.team_name} />,
+          },
+        ]
+      : []),
     {
       label: translate("taskInstance.dagVersion"),
       value: <DagVersion version={taskInstance.dag_version} />,
     },
   ];
 
-  const [note, setNote] = useState<string | null>(taskInstance.note);
-
-  const dagId = taskInstance.dag_id;
-  const dagRunId = taskInstance.dag_run_id;
-  const taskId = taskInstance.task_id;
-  const mapIndex = taskInstance.map_index;
-
-  const { isPending, mutate } = usePatchTaskInstance({
-    dagId,
-    dagRunId,
-    mapIndex,
-    taskId,
-  });
-
-  const onConfirm = () => {
-    if (note !== taskInstance.note) {
-      mutate({
-        dagId,
-        dagRunId,
-        mapIndex,
-        requestBody: { note },
-        taskId,
-      });
-    }
-  };
-
-  const onOpen = () => {
-    setNote(taskInstance.note ?? "");
-  };
-
   // Stable dialog state at header/page level
   const [clearOpen, setClearOpen] = useState(false);
 
   return (
-    <Box>
+    <Box display="flex" flexDirection="column" gap={3}>
       <HeaderCard
         actions={
           <>
-            <EditableMarkdownButton
-              header={translate("note.taskInstance")}
-              isPending={isPending}
-              mdContent={taskInstance.note}
-              onConfirm={onConfirm}
-              onOpen={onOpen}
-              placeholder={translate("note.placeholder")}
-              setMdContent={setNote}
-            />
             <ClearTaskInstanceButton
+              bg="bg"
               isHotkeyEnabled
               onOpen={() => setClearOpen(true)}
               taskInstance={taskInstance}
+              variant="outline"
             />
-            <MarkTaskInstanceAsButton isHotkeyEnabled taskInstance={taskInstance} />
+            <MarkTaskInstanceAsButton bg="bg" isHotkeyEnabled taskInstance={taskInstance} variant="outline" />
           </>
         }
         icon={<MdOutlineTask />}
         state={taskInstance.state}
         stats={stats}
         title={`${taskInstance.task_display_name}${taskInstance.map_index > -1 ? ` [${taskInstance.rendered_map_index ?? taskInstance.map_index}]` : ""}`}
+        type="taskInstance"
+      />
+      <NotePreview
+        header={translate("note.taskInstance")}
+        isPending={isPending}
+        note={note}
+        onOpen={onOpen}
+        onSave={onSave}
+        setNote={setNote}
       />
       <ClearTaskInstanceDialog
         onClose={() => setClearOpen(false)}

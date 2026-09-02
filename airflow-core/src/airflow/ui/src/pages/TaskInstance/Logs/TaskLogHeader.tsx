@@ -31,9 +31,11 @@ import {
 import { useSearchParams } from "react-router-dom";
 
 import type { TaskInstanceResponse } from "openapi/requests/types.gen";
+
+import { IconButton, Menu, Select, LazyClipboard } from "src/system-components";
+
 import { TaskTrySelect } from "src/components/TaskTrySelect";
-import { IconButton, Menu, Select } from "src/components/ui";
-import { LazyClipboard } from "src/components/ui/LazyClipboard";
+
 import { SearchParamsKeys } from "src/constants/searchParams";
 import { defaultSystem } from "src/theme";
 import { type LogLevel, logLevelColorMapping, logLevelOptions } from "src/utils/logs";
@@ -234,19 +236,15 @@ export const TaskLogHeader = ({
             </Menu.Content>
           </Menu.Root>
           {!isFullscreen && (
-            <IconButton
-              label={translate("dag:logs.fullscreen.tooltip", { hotkey: "f" })}
-              onClick={toggleFullscreen}
-            >
+            <IconButton label={translate("fullscreen.tooltip", { hotkey: "f" })} onClick={toggleFullscreen}>
               <MdOutlineOpenInFull />
             </IconButton>
           )}
 
           <LazyClipboard
-            aria-label={translate("components:clipboard.copy")}
             getValue={getLogString}
+            label={translate("components:clipboard.copy")}
             size="md"
-            title={translate("components:clipboard.copy")}
             variant="ghost"
           />
 

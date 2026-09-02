@@ -18,9 +18,11 @@
  */
 import { useDagRunServiceGetDagRuns, useDagServiceGetDagDetails } from "openapi/queries";
 import type { TaskInstanceState } from "openapi/requests/types.gen";
+
 import { useConfig } from "src/queries/useConfig";
 
 export const isStatePending = (state?: TaskInstanceState | null) =>
+  state === "awaiting_input" ||
   state === "deferred" ||
   state === "scheduled" ||
   state === "running" ||

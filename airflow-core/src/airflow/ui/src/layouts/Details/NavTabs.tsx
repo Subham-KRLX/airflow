@@ -16,55 +16,78 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { Center, Flex } from "@chakra-ui/react";
 import { useRef, type ReactNode } from "react";
-import { NavLink } from "react-router-dom";
+
+import { Center, Flex } from "@chakra-ui/react";
+import { NavLink, useLocation } from "react-router-dom";
 
 import { useContainerWidth } from "src/utils";
 
-type Props = {
-  readonly tabs: Array<{ icon?: ReactNode; label: string; value: string }>;
+export type NavTab = {
+  readonly icon?: ReactNode;
+  readonly label: string;
+  /** Additional route segments that should also mark this tab as active. */
+  readonly matchPaths?: Array<string>;
+  readonly value: string;
 };
+
+type Props = {
+  readonly tabs: Array<NavTab>;
+};
+
+const INDICATOR_HEIGHT = "2px";
 
 export const NavTabs = ({ tabs }: Props) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const containerWidth = useContainerWidth(containerRef);
+  const { pathname } = useLocation();
+  // Last path segment, e.g. "task-store" or "xcom"
+  const lastSegment = pathname.split("/").pop() ?? "";
 
   return (
     <Flex
       alignItems="center"
       borderBottomColor="border.emphasized"
-      borderBottomWidth={1}
+      borderBottomWidth={INDICATOR_HEIGHT}
       mb={2}
       ref={containerRef}
     >
-      {tabs.map(({ icon, label, value }) => (
-        <NavLink
-          end
-          key={value}
-          title={label}
-          to={{
-            pathname: value,
-          }}
-        >
-          {({ isActive }) => (
-            <Center
-              _hover={{ color: "fg" }}
-              borderBottomColor="border.info"
-              borderBottomWidth={isActive ? 3 : 0}
-              color={isActive ? "fg" : "fg.muted"}
-              fontWeight="bold"
-              height="40px"
-              mb="-2px" // Show the border on top of its parent's border
-              pb={isActive ? 0 : "3px"}
-              px={4}
-              transition="all 0.2s ease"
-            >
-              {containerWidth > 600 || !Boolean(icon) ? label : icon}
-            </Center>
-          )}
-        </NavLink>
-      ))}
+      {tabs.map(({ icon, label, matchPaths, value }) => {
+        const isPathMatch = (matchPaths ?? []).includes(lastSegment);
+
+        return (
+          <NavLink
+            end
+            key={value}
+            title={label}
+            to={{
+              pathname: value,
+            }}
+          >
+            {({ isActive }) => {
+              const active = isActive || isPathMatch;
+
+              return (
+                <Center
+                  _focus={{ color: active ? "fg" : "brand.solid" }}
+                  _hover={{ color: active ? "fg" : "brand.solid" }}
+                  borderBottomColor={active ? "brand.solid" : "transparent"}
+                  borderBottomWidth={INDICATOR_HEIGHT}
+                  color={active ? "fg" : "fg.muted"}
+                  fontSize="md"
+                  fontWeight={active ? "bold" : "medium"}
+                  height="40px"
+                  mb={`-${INDICATOR_HEIGHT}`} // Show the border on top of its parent's border
+                  px={4}
+                  transition="all 0.2s ease"
+                >
+                  {containerWidth > 600 || !Boolean(icon) ? label : icon}
+                </Center>
+              );
+            }}
+          </NavLink>
+        );
+      })}
     </Flex>
   );
 };

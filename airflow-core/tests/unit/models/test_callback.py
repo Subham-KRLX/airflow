@@ -117,6 +117,15 @@ class TestCallback:
             "dag_id": TEST_DAG_ID,
         }
 
+    def test_get_metric_info_includes_queue(self):
+        """``queue`` is stored in ``self.data`` for a queued AsyncCallback, so it flows into metric tags."""
+        queued_callback = AsyncCallback(async_callback, kwargs=TEST_CALLBACK_KWARGS, queue="custom-queue")
+        callback = TriggererCallback(queued_callback, prefix="deadline_alerts", dag_id=TEST_DAG_ID)
+
+        metric_info = callback.get_metric_info(CallbackState.SUCCESS, "0")
+
+        assert metric_info["tags"]["queue"] == "custom-queue"
+
     def test_get_metric_info_dict_values_are_stringified(self):
         """
         Regression for ``TypeError: unhashable type: 'dict'`` raised by OpenTelemetry's
@@ -142,6 +151,21 @@ class TestCallback:
         # Stringified tag values must be sorted so equivalent kwargs in different
         # insertion order collapse to one metric series (no needless cardinality split).
         assert metric_info["tags"]["result"] == '{"code": 0, "output": [1, 2]}'
+
+    @pytest.mark.parametrize(
+        ("team_name", "expect_tag"),
+        [
+            pytest.param("team_alpha", True, id="with_team"),
+            pytest.param(None, False, id="without_team"),
+        ],
+    )
+    def test_get_metric_info_includes_team_name(self, team_name, expect_tag):
+        callback = TriggererCallback(TEST_ASYNC_CALLBACK, prefix="deadline_alerts", dag_id=TEST_DAG_ID)
+        metric_info = callback.get_metric_info(CallbackState.SUCCESS, "0", team_name=team_name)
+        if expect_tag:
+            assert metric_info["tags"]["team_name"] == team_name
+        else:
+            assert "team_name" not in metric_info["tags"]
 
 
 class TestTriggererCallback:
@@ -170,7 +194,16 @@ class TestTriggererCallback:
         assert isinstance(callback.trigger, Trigger)
         assert callback.trigger.kwargs["callback_path"] == TEST_ASYNC_CALLBACK.path
         assert callback.trigger.kwargs["callback_kwargs"] == TEST_ASYNC_CALLBACK.kwargs
+        assert callback.trigger.queue is None
         assert callback.state == CallbackState.QUEUED
+
+    def test_queue_populates_trigger_queue(self, session):
+        queued_callback = AsyncCallback(async_callback, kwargs=TEST_CALLBACK_KWARGS, queue="custom-queue")
+        callback = TriggererCallback(queued_callback)
+
+        callback.queue(session=session)
+
+        assert callback.trigger.queue == "custom-queue"
 
     @staticmethod
     def _queue_callback(session, *, has_bundle, has_team):
@@ -248,6 +281,36 @@ class TestTriggererCallback:
         if terminal_state:
             assert callback.trigger is None
             assert callback.output == event.payload[PAYLOAD_BODY_KEY]
+
+    @pytest.mark.parametrize(
+        ("multi_team", "team_name", "expect_tag"),
+        [
+            pytest.param("true", "team_alpha", True, id="with_team"),
+            pytest.param("false", None, False, id="without_team"),
+        ],
+    )
+    @patch("airflow.models.callback.stats.incr")
+    def test_handle_event_emits_team_name(self, mock_incr, multi_team, team_name, expect_tag, session):
+        """On a terminal event, callback_{status} carries team_name resolved from the bundle."""
+        callback = TriggererCallback(TEST_ASYNC_CALLBACK, dag_id=TEST_DAG_ID)
+        callback.bundle_name = "test_bundle"
+        event = TriggerEvent({PAYLOAD_STATUS_KEY: CallbackState.SUCCESS, PAYLOAD_BODY_KEY: "0"})
+
+        with (
+            conf_vars({("core", "multi_team"): multi_team}),
+            patch(
+                "airflow.models.callback.DagBundleModel.get_team_name", return_value=team_name
+            ) as mock_get_team_name,
+        ):
+            callback.handle_event(event, session)
+
+        mock_incr.assert_called_once()
+        _, kwargs = mock_incr.call_args
+        if expect_tag:
+            assert kwargs["tags"]["team_name"] == team_name
+        else:
+            mock_get_team_name.assert_not_called()
+            assert "team_name" not in kwargs["tags"]
 
 
 class TestExecutorCallback:

@@ -28,6 +28,7 @@ from flask import g
 from flask_appbuilder.const import AUTH_DB, AUTH_LDAP
 from sqlalchemy.exc import OperationalError, PendingRollbackError
 
+from airflow import settings
 from airflow.api_fastapi.app import AUTH_MANAGER_FASTAPI_APP_PREFIX
 from airflow.api_fastapi.common.types import MenuItem
 from airflow.exceptions import AirflowConfigException, AirflowProviderDeprecationWarning
@@ -220,6 +221,36 @@ class TestFabAuthManager:
 
         assert user.get_id() == result.get_id()
 
+    def test_deserialize_user_rejects_inactive_user(self, flask_app, auth_manager_with_appbuilder):
+        """A token naming a deactivated account must not resolve to a user."""
+        user = create_user(flask_app, "test_inactive")
+        auth_manager_with_appbuilder.cache.clear()
+
+        user.active = False
+        auth_manager_with_appbuilder.session.commit()
+        auth_manager_with_appbuilder.cache.clear()
+
+        with pytest.raises(ValueError, match=f"User with id {user.id} is not active"):
+            auth_manager_with_appbuilder.deserialize_user({"sub": str(user.id)})
+
+    def test_deserialize_user_rejects_null_active(self, flask_app, auth_manager_with_appbuilder):
+        """``active`` is nullable; a null is treated as inactive, as on the password path."""
+        user = create_user(flask_app, "test_null_active")
+        user.active = None
+        auth_manager_with_appbuilder.session.commit()
+        auth_manager_with_appbuilder.cache.clear()
+
+        with pytest.raises(ValueError, match=f"User with id {user.id} is not active"):
+            auth_manager_with_appbuilder.deserialize_user({"sub": str(user.id)})
+
+    def test_deserialize_user_accepts_active_user(self, flask_app, auth_manager_with_appbuilder):
+        user = create_user(flask_app, "test_still_active")
+        auth_manager_with_appbuilder.cache.clear()
+
+        result = auth_manager_with_appbuilder.deserialize_user({"sub": str(user.id)})
+
+        assert result.get_id() == user.get_id()
+
     def test_deserialize_user_not_found(self, flask_app, auth_manager_with_appbuilder):
         """Test that deserialize_user raises ValueError when the user does not exist."""
         non_existent_id = "99999"
@@ -255,12 +286,24 @@ class TestFabAuthManager:
 
     @mock.patch.object(FabAuthManager, "get_user")
     def test_is_logged_in_with_inactive_user(self, mock_get_user, auth_manager_with_appbuilder):
+        # ``is_anonymous`` and ``is_active`` are properties on the real model, so the
+        # mock has to set attributes rather than ``return_value``; setting the latter
+        # leaves a truthy Mock in place and the assertion passes regardless of state.
         user = Mock()
-        user.is_anonymous.return_value = False
-        user.is_active.return_value = True
+        user.is_anonymous = False
+        user.is_active = False
         mock_get_user.return_value = user
 
         assert auth_manager_with_appbuilder.is_logged_in() is False
+
+    @mock.patch.object(FabAuthManager, "get_user")
+    def test_is_logged_in_with_active_user(self, mock_get_user, auth_manager_with_appbuilder):
+        user = Mock()
+        user.is_anonymous = False
+        user.is_active = True
+        mock_get_user.return_value = user
+
+        assert auth_manager_with_appbuilder.is_logged_in() is True
 
     @mock.patch.object(FabAuthManager, "get_user")
     def test_is_logged_in_with_auth_role_public(self, mock_get_user, flask_app, auth_manager_with_appbuilder):
@@ -1058,6 +1101,28 @@ def test_resetdb(
 
 
 @pytest.mark.db_test
+@pytest.mark.skipif(
+    not AIRFLOW_V_3_1_PLUS,
+    reason="Compat matrix against Airflow < 3.1 uses NullPool, which does not track checked-out connections.",
+)
+class TestDeserializeUserSessionLifecycle:
+    def test_no_connection_checked_out_after_deserialize_user(self, flask_app, auth_manager_with_appbuilder):
+        user = create_user(flask_app, "session_lifecycle_test_user")
+        try:
+            settings.engine.dispose()
+            auth_manager_with_appbuilder.cache.clear()
+
+            result = auth_manager_with_appbuilder.deserialize_user({"sub": str(user.id)})
+            assert result.id == user.id
+
+            assert settings.engine.pool.checkedout() == 0, (
+                "deserialize_user left a connection checked out — session was not closed"
+            )
+        finally:
+            delete_user(flask_app, "session_lifecycle_test_user")
+
+
+@pytest.mark.db_test
 class TestDeserializeUserSessionCleanup:
     """Test that deserialize_user cleans up the FAB scoped session on database errors.
 
@@ -1072,11 +1137,22 @@ class TestDeserializeUserSessionCleanup:
     """
 
     @staticmethod
+    @contextmanager
     def _patched_session(auth_manager, mock_session):
-        """Replace the ``session`` property on *auth_manager* with *mock_session*."""
-        return mock.patch.object(
-            type(auth_manager), "session", new_callable=mock.PropertyMock, return_value=mock_session
-        )
+        """Route both ``self.session`` and ``create_session()`` to *mock_session*."""
+        create_session_cm = MagicMock(spec=["__enter__", "__exit__"])
+        create_session_cm.__enter__.return_value = mock_session
+        create_session_cm.__exit__.return_value = False
+        with (
+            mock.patch.object(
+                type(auth_manager), "session", new_callable=mock.PropertyMock, return_value=mock_session
+            ),
+            mock.patch(
+                "airflow.providers.fab.auth_manager.fab_auth_manager.create_session",
+                return_value=create_session_cm,
+            ),
+        ):
+            yield
 
     @pytest.mark.parametrize(
         "raised_exc",

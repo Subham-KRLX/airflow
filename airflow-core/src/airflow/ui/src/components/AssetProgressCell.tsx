@@ -21,9 +21,11 @@ import { FiDatabase } from "react-icons/fi";
 
 import { usePartitionedDagRunServiceGetPendingPartitionedDagRun } from "openapi/queries";
 import type { NextRunAssetEventResponse, PartitionedDagRunAssetResponse } from "openapi/requests/types.gen";
-import { AssetExpression, type ExpressionType } from "src/components/AssetExpression";
+
+import { Popover, RouterLink } from "src/system-components";
+
+import { AssetExpression } from "src/components/AssetExpression";
 import { RollupKeyChecklist } from "src/components/RollupKeyChecklist";
-import { Popover, RouterLink } from "src/components/ui";
 
 type Props = {
   readonly dagId: string;
@@ -35,7 +37,7 @@ type Props = {
 export const AssetProgressCell = ({ dagId, partitionKey, totalReceived, totalRequired }: Props) => {
   const { data, isLoading } = usePartitionedDagRunServiceGetPendingPartitionedDagRun({ dagId, partitionKey });
 
-  const assetExpression = data?.asset_expression as ExpressionType | undefined;
+  const assetExpression = data?.asset_expression ?? undefined;
   const assets: Array<PartitionedDagRunAssetResponse> = data?.assets ?? [];
 
   const hasRollup = assets.some((ak) => ak.is_rollup);

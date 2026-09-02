@@ -67,6 +67,9 @@ from airflow.models.dagrun import DagRun
 from airflow.models.hitl import HITLDetail as HITLDetailModel, HITLUser
 from airflow.models.taskinstance import TaskInstance as TI
 from airflow.models.taskinstancehistory import TaskInstanceHistory as TIH
+from airflow.models.trigger import handle_event_submit
+from airflow.triggers.base import TriggerEvent
+from airflow.utils.state import TaskInstanceState
 
 task_instances_hitl_router = AirflowRouter(
     tags=["Task Instance"],
@@ -133,6 +136,7 @@ def _get_task_instance_with_hitl_detail(
     task_instance_hitl_path,
     responses=create_openapi_http_exception_doc(
         [
+            status.HTTP_400_BAD_REQUEST,
             status.HTTP_403_FORBIDDEN,
             status.HTTP_404_NOT_FOUND,
             status.HTTP_409_CONFLICT,
@@ -161,6 +165,23 @@ def update_hitl_detail(
         map_index=map_index,
     )
 
+    # Acquire row locks in a fixed order -- TaskInstance first, then the HITL row -- matching the
+    # Execution API park transition, so a human response racing the worker's park cannot deadlock.
+    # Locking the TI also serializes respond-vs-clear (the clear path locks the TI, not the HITL row).
+    locked_ti = (
+        session.get(TI, task_instance.id, with_for_update={"of": TI})
+        if isinstance(task_instance, TI)
+        else None
+    )
+    # Lock the hitl_detail row (FOR UPDATE OF hitl_detail). of= scopes the lock to hitl_detail, which
+    # eager-joins task_instance (lazy="joined"); a bare with_for_update() would emit FOR UPDATE against
+    # the nullable side of that outer join, which Postgres rejects. The joinedloaded relationship object
+    # reused below is the same identity-mapped row, now locked for this transaction.
+    session.execute(
+        select(HITLDetailModel)
+        .where(HITLDetailModel.ti_id == task_instance.id)
+        .with_for_update(of=HITLDetailModel)
+    )
     hitl_detail_model = task_instance.hitl_detail
     if hitl_detail_model.response_received:
         raise HTTPException(
@@ -176,7 +197,7 @@ def update_hitl_detail(
     if isinstance(user_id, int):
         # FabAuthManager (ab_user) store user id as integer, but common interface is string type
         user_id = str(user_id)
-    hitl_user = HITLUser(id=user_id, name=user_name)
+    hitl_user = HITLUser(id=user_id, name=user.get_display_name())
     if hitl_detail_model.assigned_users:
         # Convert assigned_users list to set of user IDs for authorization check
         assigned_user_ids = {assigned_user["id"] for assigned_user in hitl_detail_model.assigned_users}
@@ -187,12 +208,42 @@ def update_hitl_detail(
                 f"User={user_name} (id={user_id}) is not a respondent for the task.",
             )
 
+    # Write-side validation: reject an invalid response here (400) instead of accepting it and
+    # failing the task later on resume. Mirrors HITLOperator.validate_chosen_options + cardinality.
+    allowed_options = set(hitl_detail_model.options or [])
+    invalid_options = set(update_hitl_detail_payload.chosen_options) - allowed_options
+    if invalid_options:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Invalid options {sorted(invalid_options)}; allowed options are {sorted(allowed_options)}.",
+        )
+    if not hitl_detail_model.multiple and len(update_hitl_detail_payload.chosen_options) > 1:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Multiple options chosen but this Human-in-the-loop task accepts only a single option.",
+        )
+
     hitl_detail_model.responded_by = hitl_user
     hitl_detail_model.responded_at = timezone.utcnow()
     hitl_detail_model.chosen_options = update_hitl_detail_payload.chosen_options
     hitl_detail_model.params_input = update_hitl_detail_payload.params_input
     session.add(hitl_detail_model)
-    session.commit()
+
+    # Event-driven resume: if the task is parked waiting for this input, transition it directly,
+    # without a trigger. handle_event_submit packs the response into next_kwargs["event"], sets
+    # state=SCHEDULED + scheduled_dttm; the scheduler then re-queues execute_complete. Gated on the
+    # parked states so a finished/cleared TI is never resurrected. `locked_ti` was locked at the top
+    # (TI-before-HITLDetail order), so a concurrent clear cannot interleave between this state check
+    # and the resume and have its reset silently overwritten.
+    if locked_ti is not None and locked_ti.state in (
+        TaskInstanceState.AWAITING_INPUT,
+        TaskInstanceState.DEFERRED,
+    ):
+        handle_event_submit(
+            TriggerEvent(hitl_detail_model.as_resume_event_payload()),
+            task_instance=locked_ti,
+            session=session,
+        )
     return HITLDetailResponse.model_validate(hitl_detail_model)
 
 

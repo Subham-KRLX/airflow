@@ -67,8 +67,19 @@ Extra (optional)
 
     **SSH connection options:**
 
-    * ``strict_host_key_checking``: Controls SSH strict host key checking. Defaults to ``no``.
-      Set to ``yes`` to enable strict checking.
+    * ``strict_host_key_checking``: Controls SSH strict host key checking. Accepts ``yes``,
+      ``no``, ``accept-new``, ``off`` or ``ask``. Defaults to ``accept-new``, which trusts a
+      server's host key on first use and then verifies it on every later connection (so a
+      changed key — a possible man-in-the-middle — is rejected). Set to ``yes`` to require the
+      host key to be present in ``known_hosts`` up front, or ``no`` to disable verification
+      entirely (not recommended).
+
+      .. warning::
+
+         A future major release of the Git provider will change this default to ``yes``.
+         Deployments that rely on the default should configure ``known_hosts_file`` (or set
+         ``strict_host_key_checking`` explicitly) now to avoid disruption when that happens.
+
     * ``known_hosts_file``: Path to a custom SSH known-hosts file. When
       ``strict_host_key_checking`` is ``no`` and this is not set, ``/dev/null`` is used.
     * ``ssh_config_file``: Path to a custom SSH config file (passed as ``ssh -F``).
@@ -82,7 +93,7 @@ Extra (optional)
 
         {
             "key_file": "/path/to/id_rsa",
-            "strict_host_key_checking": "no"
+            "strict_host_key_checking": "accept-new"
         }
 
     Example with inline private key and passphrase:
@@ -104,4 +115,40 @@ Extra (optional)
             "ssh_port": "2222",
             "strict_host_key_checking": "yes",
             "known_hosts_file": "/path/to/known_hosts"
+        }
+
+    **GitHub App authentication:**
+
+    In order to use GitHub App authentication the ``github`` extra needs to be installed:
+
+    .. code-block:: bash
+
+        pip install 'apache-airflow-providers-git[github]'
+
+    * ``github_app_id``: The App ID of your GitHub App. Note that the GitHub App Client ID can also be used.
+    * ``github_installation_id``: The installation ID of your GitHub app.
+    * ``key_file``: Path to a PEM-encoded private key file for your GitHub App.
+    * ``private_key``: An inline PEM-encoded private key string. When provided, the hook writes it
+      to a temporary file and uses it for the GitHub App connection.
+      Mutually exclusive with ``key_file``.
+
+
+    Example with key file:
+
+    .. code-block:: json
+
+        {
+            "github_app_id": "1234567",
+            "github_installation_id": "67890",
+            "key_file": "/path/to/private-key.pem"
+        }
+
+    Example with inline private key:
+
+    .. code-block:: json
+
+        {
+            "github_app_id": "1234567",
+            "github_installation_id": "67890",
+            "private_key": "<content of your PEM-encoded private key>"
         }

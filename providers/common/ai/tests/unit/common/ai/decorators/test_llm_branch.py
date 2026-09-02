@@ -30,9 +30,7 @@ def _make_mock_run_result(output):
     """Create a mock AgentRunResult compatible with log_run_summary."""
     mock_result = MagicMock()
     mock_result.output = output
-    mock_result.usage.return_value = MagicMock(
-        requests=1, tool_calls=0, input_tokens=0, output_tokens=0, total_tokens=0
-    )
+    mock_result.usage = MagicMock(requests=1, tool_calls=0, input_tokens=0, output_tokens=0, total_tokens=0)
     mock_result.response = MagicMock(model_name="test-model")
     mock_result.all_messages.return_value = []
     return mock_result
@@ -84,6 +82,25 @@ class TestLLMBranchDecoratedOperator:
         )
         with pytest.raises(TypeError, match="must be"):
             op.execute(context={})
+
+    @patch("airflow.providers.common.ai.operators.llm.PydanticAIHook", autospec=True)
+    def test_sequence_prompt_with_require_approval_raises_before_run_sync(self, mock_hook_cls):
+        """Sequence prompt + require_approval=True fails before the agent runs."""
+        mock_agent = MagicMock(spec=["run_sync"])
+        mock_hook_cls.get_hook.return_value.create_agent.return_value = mock_agent
+
+        op = _LLMBranchDecoratedOperator(
+            task_id="test",
+            python_callable=lambda: ["x", ImageUrl(url="https://example.com/x.png")],
+            llm_conn_id="my_llm",
+            require_approval=True,
+        )
+        op.downstream_task_ids = {"positive"}
+
+        with pytest.raises(TypeError, match="require_approval=True"):
+            op.execute(context={})
+
+        mock_agent.run_sync.assert_not_called()
 
     @patch.object(LLMBranchOperator, "do_branch")
     @patch("airflow.providers.common.ai.operators.llm.PydanticAIHook", autospec=True)

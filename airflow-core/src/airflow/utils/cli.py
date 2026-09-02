@@ -77,6 +77,7 @@ def action_cli(func=None, check_db=True):
             dag_id : dag id (optional)
             task_id : task_id (optional)
             logical_date : logical date (optional)
+            team_name : team the command is scoped to (optional)
             error : exception instance if there's an exception
 
         :param f: function instance
@@ -110,7 +111,18 @@ def action_cli(func=None, check_db=True):
                     if conf.getboolean("database", "check_migrations"):
                         check_and_run_migrations()
                     synchronize_log_template()
-                return f(*args, **kwargs)
+                    # Set server context so validation logic (e.g. DagBundlesManager) runs correctly
+                    original_ctx = os.environ.pop("_AIRFLOW_PROCESS_CONTEXT", None)
+                    try:
+                        os.environ["_AIRFLOW_PROCESS_CONTEXT"] = "server"
+                        return f(*args, **kwargs)
+                    finally:
+                        if original_ctx is None:
+                            os.environ.pop("_AIRFLOW_PROCESS_CONTEXT", None)
+                        else:
+                            os.environ["_AIRFLOW_PROCESS_CONTEXT"] = original_ctx
+                else:
+                    return f(*args, **kwargs)
             except Exception as e:
                 metrics["error"] = e
                 raise
@@ -131,7 +143,7 @@ def _build_metrics(func_name, namespace):
 
     It assumes that function arguments is from airflow.bin.cli module's function
     and has Namespace instance where it optionally contains "dag_id", "task_id",
-    and "logical_date".
+    "logical_date", and a team name.
 
     :param func_name: name of function
     :param namespace: Namespace instance from argparse
@@ -211,6 +223,11 @@ def _build_metrics(func_name, namespace):
     metrics["dag_id"] = tmp_dic.get("dag_id")
     metrics["task_id"] = tmp_dic.get("task_id")
     metrics["logical_date"] = tmp_dic.get("logical_date")
+    # The ``teams`` commands take the team they act on as a positional ``name``; everything else
+    # scoped to a team (``triggerer``, ``pools set``) takes it as ``--team-name``.
+    metrics["team_name"] = tmp_dic.get("team_name") or (
+        tmp_dic.get("name") if func_name.startswith("team_") else None
+    )
     metrics["host_name"] = socket.gethostname()
 
     return metrics

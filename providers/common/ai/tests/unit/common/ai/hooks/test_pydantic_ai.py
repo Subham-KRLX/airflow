@@ -18,11 +18,13 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 from pydantic_ai.models import Model
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.providers import infer_provider_class
 
 from airflow.models.connection import Connection
 from airflow.providers.common.ai.hooks.pydantic_ai import (
@@ -40,9 +42,9 @@ class TestPydanticAIHookInit:
         assert hook.model_id is None
 
     def test_custom_conn_id(self):
-        hook = PydanticAIHook(llm_conn_id="my_llm", model_id="openai:gpt-5.3")
+        hook = PydanticAIHook(llm_conn_id="my_llm", model_id="openai:gpt-5.6-sol")
         assert hook.llm_conn_id == "my_llm"
-        assert hook.model_id == "openai:gpt-5.3"
+        assert hook.model_id == "openai:gpt-5.6-sol"
 
     def test_azure_hook_uses_own_default_conn_name(self):
         """Subclass default_conn_name is used, not the base class value."""
@@ -68,7 +70,7 @@ class TestPydanticAIHookGetConn:
         mock_provider = MagicMock()
         mock_infer_provider_class.return_value = MagicMock(return_value=mock_provider)
 
-        hook = PydanticAIHook(llm_conn_id="test_conn", model_id="openai:gpt-5.3")
+        hook = PydanticAIHook(llm_conn_id="test_conn", model_id="openai:gpt-5.6-sol")
         conn = Connection(
             conn_id="test_conn",
             conn_type="pydanticai",
@@ -81,7 +83,7 @@ class TestPydanticAIHookGetConn:
         assert result is mock_model
         mock_infer_model.assert_called_once()
         call_args = mock_infer_model.call_args
-        assert call_args[0][0] == "openai:gpt-5.3"
+        assert call_args[0][0] == "openai:gpt-5.6-sol"
         # provider_factory should be passed as keyword arg
         assert "provider_factory" in call_args[1]
 
@@ -119,7 +121,7 @@ class TestPydanticAIHookGetConn:
         mock_infer_model.return_value = MagicMock(spec=Model)
         mock_infer_provider_class.return_value = MagicMock(return_value=MagicMock())
 
-        hook = PydanticAIHook(llm_conn_id="test_conn", model_id="openai:gpt-5.3")
+        hook = PydanticAIHook(llm_conn_id="test_conn", model_id="openai:gpt-5.6-sol")
         conn = Connection(
             conn_id="test_conn",
             conn_type="pydanticai",
@@ -130,7 +132,7 @@ class TestPydanticAIHookGetConn:
             hook.get_conn()
 
         # model_id param takes priority over extra
-        assert mock_infer_model.call_args[0][0] == "openai:gpt-5.3"
+        assert mock_infer_model.call_args[0][0] == "openai:gpt-5.6-sol"
 
     def test_get_conn_raises_when_no_model(self):
         hook = PydanticAIHook(llm_conn_id="test_conn")
@@ -187,7 +189,7 @@ class TestPydanticAIHookGetConn:
         mock_model = MagicMock(spec=Model)
         mock_infer_model.return_value = mock_model
 
-        hook = PydanticAIHook(llm_conn_id="test_conn", model_id="openai:gpt-5.3")
+        hook = PydanticAIHook(llm_conn_id="test_conn", model_id="openai:gpt-5.6-sol")
         conn = Connection(conn_id="test_conn", conn_type="pydanticai")
         with patch.object(hook, "get_connection", return_value=conn):
             first = hook.get_conn()
@@ -204,7 +206,7 @@ class TestPydanticAIHookCreateAgent:
         mock_model = MagicMock(spec=Model)
         mock_infer_model.return_value = mock_model
 
-        hook = PydanticAIHook(llm_conn_id="test_conn", model_id="openai:gpt-5.3")
+        hook = PydanticAIHook(llm_conn_id="test_conn", model_id="openai:gpt-5.6-sol")
         conn = Connection(
             conn_id="test_conn",
             conn_type="pydanticai",
@@ -224,7 +226,7 @@ class TestPydanticAIHookCreateAgent:
         mock_model = MagicMock(spec=Model)
         mock_infer_model.return_value = mock_model
 
-        hook = PydanticAIHook(llm_conn_id="test_conn", model_id="openai:gpt-5.3")
+        hook = PydanticAIHook(llm_conn_id="test_conn", model_id="openai:gpt-5.6-sol")
         conn = Connection(
             conn_id="test_conn",
             conn_type="pydanticai",
@@ -243,13 +245,140 @@ class TestPydanticAIHookCreateAgent:
             retries=3,
         )
 
+    def test_create_agent_without_instructions_or_spec_file_raises(self):
+        hook = PydanticAIHook(llm_conn_id="test_conn", model_id="openai:gpt-5.6-sol")
+        with pytest.raises(ValueError, match="instructions is required"):
+            hook.create_agent()
+
+    @patch("airflow.providers.common.ai.hooks.pydantic_ai.infer_model", autospec=True)
+    @patch("airflow.providers.common.ai.hooks.pydantic_ai.Agent")
+    def test_create_agent_with_spec_file_calls_from_file(self, mock_agent_cls, mock_infer_model):
+        """spec_file routes to Agent.from_file with the hook model when configured."""
+        mock_model = MagicMock(spec=Model)
+        mock_infer_model.return_value = mock_model
+
+        hook = PydanticAIHook(llm_conn_id="test_conn", model_id="openai:gpt-5.6-sol")
+        conn = Connection(conn_id="test_conn", conn_type="pydanticai")
+        with patch.object(hook, "get_connection", return_value=conn):
+            hook.create_agent(spec_file="/path/to/agent.yaml")
+
+        mock_agent_cls.from_file.assert_called_once_with(
+            "/path/to/agent.yaml",
+            model=mock_model,
+            output_type=str,
+        )
+        mock_agent_cls.assert_not_called()
+
+    @patch("airflow.providers.common.ai.hooks.pydantic_ai.infer_model", autospec=True)
+    @patch("airflow.providers.common.ai.hooks.pydantic_ai.Agent")
+    def test_create_agent_with_spec_file_uses_file_model_when_hook_model_not_configured(
+        self, mock_agent_cls, mock_infer_model
+    ):
+        """spec_file model is used when neither model_id nor connection model is configured."""
+        hook = PydanticAIHook(llm_conn_id="test_conn")
+        conn = Connection(conn_id="test_conn", conn_type="pydanticai")
+        with patch.object(hook, "get_connection", return_value=conn):
+            hook.create_agent(spec_file="/path/to/agent.yaml")
+
+        mock_infer_model.assert_not_called()
+        mock_agent_cls.from_file.assert_called_once_with(
+            "/path/to/agent.yaml",
+            output_type=str,
+        )
+        mock_agent_cls.assert_not_called()
+
+    @patch("airflow.providers.common.ai.hooks.pydantic_ai.infer_model", autospec=True)
+    @patch("airflow.providers.common.ai.hooks.pydantic_ai.Agent")
+    def test_create_agent_with_spec_file_path_object(self, mock_agent_cls, mock_infer_model):
+        """spec_file accepts a pathlib.Path object."""
+        mock_model = MagicMock(spec=Model)
+        mock_infer_model.return_value = mock_model
+
+        hook = PydanticAIHook(llm_conn_id="test_conn", model_id="openai:gpt-5.6-sol")
+        conn = Connection(conn_id="test_conn", conn_type="pydanticai")
+        spec_path = Path("/path/to/agent.yaml")
+        with patch.object(hook, "get_connection", return_value=conn):
+            hook.create_agent(spec_file=spec_path)
+
+        mock_agent_cls.from_file.assert_called_once_with(
+            spec_path,
+            model=mock_model,
+            output_type=str,
+        )
+
+    @patch("airflow.providers.common.ai.hooks.pydantic_ai.infer_model", autospec=True)
+    @patch("airflow.providers.common.ai.hooks.pydantic_ai.Agent")
+    def test_create_agent_with_spec_file_merges_additional_instructions(
+        self, mock_agent_cls, mock_infer_model
+    ):
+        """Explicit instructions are forwarded so pydantic-ai merges them with the spec."""
+        mock_model = MagicMock(spec=Model)
+        mock_infer_model.return_value = mock_model
+
+        hook = PydanticAIHook(llm_conn_id="test_conn", model_id="openai:gpt-5.6-sol")
+        conn = Connection(conn_id="test_conn", conn_type="pydanticai")
+        with patch.object(hook, "get_connection", return_value=conn):
+            hook.create_agent(
+                spec_file="/path/to/agent.yaml",
+                instructions="Override instructions.",
+            )
+
+        mock_agent_cls.from_file.assert_called_once_with(
+            "/path/to/agent.yaml",
+            model=mock_model,
+            output_type=str,
+            instructions="Override instructions.",
+        )
+
+    @patch("airflow.providers.common.ai.hooks.pydantic_ai.infer_model", autospec=True)
+    @patch("airflow.providers.common.ai.hooks.pydantic_ai.Agent")
+    def test_create_agent_with_spec_file_custom_output_type(self, mock_agent_cls, mock_infer_model):
+        """output_type is forwarded to Agent.from_file."""
+        mock_model = MagicMock(spec=Model)
+        mock_infer_model.return_value = mock_model
+
+        hook = PydanticAIHook(llm_conn_id="test_conn", model_id="openai:gpt-5.6-sol")
+        conn = Connection(conn_id="test_conn", conn_type="pydanticai")
+        with patch.object(hook, "get_connection", return_value=conn):
+            hook.create_agent(output_type=dict, spec_file="/path/to/agent.yaml")
+
+        mock_agent_cls.from_file.assert_called_once_with(
+            "/path/to/agent.yaml",
+            model=mock_model,
+            output_type=dict,
+        )
+
+    @patch("airflow.providers.common.ai.hooks.pydantic_ai.infer_model", autospec=True)
+    @patch("airflow.providers.common.ai.hooks.pydantic_ai.Agent")
+    def test_create_agent_with_spec_file_forwards_agent_kwargs(self, mock_agent_cls, mock_infer_model):
+        """Extra agent_kwargs are forwarded to Agent.from_file."""
+        mock_model = MagicMock(spec=Model)
+        mock_infer_model.return_value = mock_model
+
+        hook = PydanticAIHook(llm_conn_id="test_conn", model_id="openai:gpt-5.6-sol")
+        conn = Connection(conn_id="test_conn", conn_type="pydanticai")
+        with patch.object(hook, "get_connection", return_value=conn):
+            hook.create_agent(
+                spec_file="/path/to/agent.yaml",
+                retries=5,
+                end_strategy="early",
+            )
+
+        mock_agent_cls.from_file.assert_called_once_with(
+            "/path/to/agent.yaml",
+            model=mock_model,
+            output_type=str,
+            retries=5,
+            end_strategy="early",
+        )
+
 
 class TestPydanticAIHookCreateAgentInstrumentation:
     """create_agent() wires OpenTelemetry instrumentation from observability."""
 
     @staticmethod
     def _hook() -> PydanticAIHook:
-        return PydanticAIHook(llm_conn_id="test_conn", model_id="openai:gpt-5.3")
+        return PydanticAIHook(llm_conn_id="test_conn", model_id="openai:gpt-5.6-sol")
 
     @patch("airflow.providers.common.ai.hooks.pydantic_ai.genai_instrumentation_settings")
     def test_instrument_set_when_settings_returned(self, mock_settings):
@@ -276,12 +405,23 @@ class TestPydanticAIHookCreateAgentInstrumentation:
     @patch("airflow.providers.common.ai.hooks.pydantic_ai.infer_model", autospec=True)
     def test_caller_instrument_short_circuits(self, mock_infer_model, mock_settings, mock_agent_cls):
         """A caller that passes its own ``instrument`` wins; we don't override it."""
-        mock_infer_model.return_value = MagicMock(spec=Model)
+        mock_model = MagicMock(spec=Model)
+        mock_infer_model.return_value = mock_model
         hook = self._hook()
         conn = Connection(conn_id="test_conn", conn_type="pydanticai")
         with patch.object(hook, "get_connection", return_value=conn):
-            hook.create_agent(instructions="hi", instrument=False)
+            agent = hook.create_agent(instructions="hi", instrument=False)
 
+        # ``instrument`` is not an Agent() constructor kwarg in pydantic-ai 2.x:
+        # it must be stripped from the constructor call and applied through the
+        # ``agent.instrument`` property instead, and the provider's own
+        # auto-instrumentation must not override the caller's value.
+        mock_agent_cls.assert_called_once_with(
+            mock_model,
+            output_type=str,
+            instructions="hi",
+        )
+        assert agent.instrument is False
         mock_settings.assert_not_called()
 
 
@@ -291,7 +431,7 @@ class TestPydanticAIHookTestConnection:
         mock_model = MagicMock(spec=Model)
         mock_infer_model.return_value = mock_model
 
-        hook = PydanticAIHook(llm_conn_id="test_conn", model_id="openai:gpt-5.3")
+        hook = PydanticAIHook(llm_conn_id="test_conn", model_id="openai:gpt-5.6-sol")
         conn = Connection(
             conn_id="test_conn",
             conn_type="pydanticai",
@@ -583,7 +723,7 @@ class TestPydanticAIVertexHook:
             None,
             None,
             {
-                "model": "google-vertex:gemini-2.0-flash",
+                "model": "google-cloud:gemini-2.0-flash",
                 "project": "my-project",
                 "location": "us-central1",
             },
@@ -600,19 +740,35 @@ class TestPydanticAIVertexHook:
         result = hook._get_provider_kwargs(
             None,
             None,
-            {"model": "google-gla:gemini-2.0-flash", "api_key": "gla-key"},
+            {"model": "google:gemini-2.0-flash", "api_key": "gla-key"},
         )
         assert result["api_key"] == "gla-key"
 
-    def test_get_provider_kwargs_vertexai_flag(self):
-        """vertexai bool is forwarded and coerced to bool."""
+    @pytest.mark.parametrize("vertexai_value", [True, False])
+    def test_get_provider_kwargs_vertexai_flag_is_not_forwarded(self, vertexai_value):
+        """The ``vertexai`` extra field must never reach the provider constructor.
+
+        Neither ``GoogleProvider`` nor ``GoogleCloudProvider`` in current pydantic-ai
+        accept a ``vertexai`` kwarg (pydantic/pydantic-ai#5336 hardcoded it inside
+        ``GoogleCloudProvider`` instead). Forwarding it raises ``TypeError``, which the
+        base hook's fallback then swallows by dropping every other kwarg -- silently
+        re-resolving credentials from the environment. Regression test for that bug.
+        """
         hook = PydanticAIVertexHook.__new__(PydanticAIVertexHook)
         result = hook._get_provider_kwargs(
             None,
             None,
-            {"model": "google-vertex:gemini-2.0-flash", "api_key": "key", "vertexai": True},
+            {
+                "model": "google-cloud:gemini-2.0-flash",
+                "project": "my-project",
+                "location": "us-central1",
+                "vertexai": vertexai_value,
+            },
         )
-        assert result["vertexai"] is True
+        assert "vertexai" not in result
+        # The other credential kwargs must still go through untouched.
+        assert result["project"] == "my-project"
+        assert result["location"] == "us-central1"
 
     def test_get_provider_kwargs_service_account_info_loads_credentials(self):
         """service_account_info dict is loaded into a Credentials object."""
@@ -637,7 +793,7 @@ class TestPydanticAIVertexHook:
                 None,
                 None,
                 {
-                    "model": "google-vertex:gemini-2.0-flash",
+                    "model": "google-cloud:gemini-2.0-flash",
                     "service_account_info": sa_info_dict,
                 },
             )
@@ -652,7 +808,7 @@ class TestPydanticAIVertexHook:
     def test_get_provider_kwargs_returns_empty_for_adc(self):
         """When no keys are in extra, return {} so ADC path is taken."""
         hook = PydanticAIVertexHook.__new__(PydanticAIVertexHook)
-        result = hook._get_provider_kwargs(None, None, {"model": "google-vertex:gemini-2.0-flash"})
+        result = hook._get_provider_kwargs(None, None, {"model": "google-cloud:gemini-2.0-flash"})
         assert result == {}
 
     @patch("airflow.providers.common.ai.hooks.pydantic_ai.infer_model", autospec=True)
@@ -662,12 +818,12 @@ class TestPydanticAIVertexHook:
         conn = Connection(
             conn_id="vertex_test",
             conn_type="pydanticai-vertex",
-            extra=json.dumps({"model": "google-vertex:gemini-2.0-flash"}),
+            extra=json.dumps({"model": "google-cloud:gemini-2.0-flash"}),
         )
         with patch.object(hook, "get_connection", return_value=conn):
             hook.get_conn()
 
-        mock_infer_model.assert_called_once_with("google-vertex:gemini-2.0-flash")
+        mock_infer_model.assert_called_once_with("google-cloud:gemini-2.0-flash")
 
     @patch("airflow.providers.common.ai.hooks.pydantic_ai.infer_model", autospec=True)
     @patch("airflow.providers.common.ai.hooks.pydantic_ai.infer_provider_class", autospec=True)
@@ -682,7 +838,7 @@ class TestPydanticAIVertexHook:
             conn_type="pydanticai-vertex",
             extra=json.dumps(
                 {
-                    "model": "google-vertex:gemini-2.0-flash",
+                    "model": "google-cloud:gemini-2.0-flash",
                     "project": "my-project",
                     "location": "europe-west4",
                 }
@@ -692,5 +848,85 @@ class TestPydanticAIVertexHook:
             hook.get_conn()
 
         factory = mock_infer_model.call_args[1]["provider_factory"]
-        factory("google-vertex")
+        factory("google-cloud")
         mock_provider_cls.assert_called_with(project="my-project", location="europe-west4")
+
+    @patch("airflow.providers.common.ai.hooks.pydantic_ai.infer_model", autospec=True)
+    @patch("airflow.providers.common.ai.hooks.pydantic_ai.infer_provider", autospec=True)
+    @patch("airflow.providers.common.ai.hooks.pydantic_ai.infer_provider_class", autospec=True)
+    def test_get_conn_vertexai_flag_does_not_trigger_typeerror_fallback(
+        self, mock_infer_provider_class, mock_infer_provider, mock_infer_model
+    ):
+        """Setting ``vertexai`` must not push ``get_conn`` onto the ``except TypeError``
+        fallback path, which would silently discard project/location/credentials.
+
+        The stand-in below has the exact keyword-only signature of the real
+        ``GoogleCloudProvider.__init__`` (verified against the installed pydantic-ai) so
+        it raises ``TypeError`` on an unexpected ``vertexai`` kwarg exactly like the real
+        class would -- the real class itself needs the optional ``google-genai``
+        dependency, which isn't part of this provider's test environment.
+        """
+
+        class FakeGoogleCloudProvider:
+            def __init__(
+                self,
+                *,
+                api_key=None,
+                credentials=None,
+                project=None,
+                location=None,
+                client=None,
+                http_client=None,
+                base_url=None,
+                retry_options=None,
+            ):
+                self.kwargs = {
+                    "api_key": api_key,
+                    "credentials": credentials,
+                    "project": project,
+                    "location": location,
+                }
+
+        mock_infer_model.return_value = MagicMock(spec=Model)
+        mock_infer_provider_class.return_value = FakeGoogleCloudProvider
+
+        hook = PydanticAIVertexHook(llm_conn_id="vertex_test")
+        conn = Connection(
+            conn_id="vertex_test",
+            conn_type="pydanticai-vertex",
+            extra=json.dumps(
+                {
+                    "model": "google-cloud:gemini-2.0-flash",
+                    "project": "my-project",
+                    "location": "us-central1",
+                    "vertexai": True,
+                }
+            ),
+        )
+        with patch.object(hook, "get_connection", return_value=conn):
+            hook.get_conn()
+
+        factory = mock_infer_model.call_args[1]["provider_factory"]
+        provider = factory("google-cloud")
+
+        assert isinstance(provider, FakeGoogleCloudProvider)
+        assert provider.kwargs["project"] == "my-project"
+        assert provider.kwargs["location"] == "us-central1"
+        # The TypeError fallback must never have been reached.
+        mock_infer_provider.assert_not_called()
+
+    def test_documented_model_prefix_is_a_valid_pydantic_ai_provider(self):
+        """Regression test: the model-prefix documented in the connection form and
+        docstrings must be a provider id pydantic-ai actually recognizes (see
+        pydantic/pydantic-ai#5336, which renamed the old Vertex provider id shortly
+        before Airflow's docstrings/placeholders were written).
+        """
+        try:
+            infer_provider_class("google-cloud")
+        except ValueError as exc:
+            pytest.fail(f"Documented prefix 'google-cloud' is not a recognized provider: {exc}")
+        except ImportError:
+            # The optional `google-genai` dependency isn't installed in the test
+            # environment; failing past provider-name resolution is enough to
+            # prove "google-cloud" is recognized.
+            pass

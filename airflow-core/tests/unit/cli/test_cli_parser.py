@@ -496,6 +496,26 @@ class TestCli:
             with pytest.raises(SystemExit):
                 parser.parse_args([*cmd_args, "--help"])
 
+    @pytest.mark.parametrize(
+        ("selected_names", "source_commands"),
+        [
+            pytest.param(cli_config.DAG_CLI_DAGS_SUBCOMMANDS, cli_config.DAGS_COMMANDS, id="dags"),
+            pytest.param(cli_config.DAG_CLI_TASKS_SUBCOMMANDS, cli_config.TASKS_COMMANDS, id="tasks"),
+        ],
+    )
+    def test_dag_cli_subcommands_all_exist(self, selected_names, source_commands):
+        """A name that no longer exists is silently dropped, so guard against stale entries."""
+        assert set(selected_names) <= {command.name for command in source_commands}
+
+    def test_dag_cli_parser_keeps_args_when_rebuilt(self):
+        """``_remove_dag_id_opt`` must not hand argparse a one-shot generator."""
+        cli_parser.get_parser.cache_clear()
+        first = vars(cli_parser.get_parser(dag_parser=True).parse_args(["dags", "pause"]))
+        cli_parser.get_parser.cache_clear()
+        second = vars(cli_parser.get_parser(dag_parser=True).parse_args(["dags", "pause"]))
+        assert "treat_dag_id_as_regex" in first
+        assert first.keys() == second.keys()
+
     def test_positive_int(self):
         assert cli_config.positive_int(allow_zero=True)("1") == 1
         assert cli_config.positive_int(allow_zero=True)("0") == 0
@@ -629,12 +649,14 @@ class TestCliSubprocess:
 
         # Warm-up run
         subprocess.run(command, env=env, capture_output=True, check=False)
-        # Limit the number of samples otherwise the test will take a very long time
-        num_samples = 3
-        threshold = 5
+        # Take the min across several samples to measure best-case startup and tolerate transient CI
+        # slowness; keep the count bounded so the test does not take a very long time. The threshold is
+        # deliberately loose -- this guards against gross startup regressions, not small fluctuations,
+        # and a tight bound flakes on loaded/cold runners (e.g. the Pendulum2 special-test job).
+        num_samples = 5
+        threshold = 8
         raw_times = timeit.repeat(stmt=timing_code, setup=setup_code, number=1, repeat=num_samples)
         timing_result = min(raw_times)
-        # Minimum run time of Airflow CLI should at least be within 5s
         assert timing_result < threshold
 
     def test_airflow_config_contains_providers(self):

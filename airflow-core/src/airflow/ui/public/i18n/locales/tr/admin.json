@@ -9,8 +9,7 @@
   "config": {
     "columns": {
       "section": "Bölüm"
-    },
-    "title": "Airflow Yapılandırması"
+    }
   },
   "connections": {
     "add": "Bağlantı Ekle",
@@ -120,7 +119,8 @@
       "includeDeferred": "Ertelenmişleri Dahil Et",
       "nameMaxLength": "Ad en fazla 256 karakter içerebilir",
       "nameRequired": "Ad gerekli",
-      "slots": "İşlem yuvaları"
+      "slots": "İşlem yuvaları",
+      "slotsHelperText": "Sınırsız işlem yuvaları için -1 kullanın."
     },
     "noPoolsFound": "Havuz bulunamadı",
     "pool_one": "Havuz",

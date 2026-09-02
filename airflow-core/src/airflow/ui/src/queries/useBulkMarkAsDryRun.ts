@@ -16,8 +16,9 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { useQueries } from "@tanstack/react-query";
 import { useMemo } from "react";
+
+import { useQueries } from "@tanstack/react-query";
 
 import { TaskInstanceService } from "openapi/requests/services.gen";
 import type {
@@ -85,7 +86,7 @@ export const useBulkMarkAsDryRun = (
           new_state: targetState,
         },
       ],
-      refetchOnMount: "always" as const,
+      refetchOnMount: "always",
     })),
   });
 

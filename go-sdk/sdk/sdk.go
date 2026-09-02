@@ -17,15 +17,22 @@
 
 package sdk
 
-import (
-	"context"
-
-	"github.com/apache/airflow/go-sdk/pkg/api"
-)
+import "context"
 
 const (
-	VariableEnvPrefix   = "AIRFLOW_VAR_"
+	// VariableEnvPrefix is the environment-variable prefix used as a local
+	// fallback for Variable lookups. GetVariable first checks the process
+	// environment for VariableEnvPrefix plus the uppercased key (so key
+	// "my_var" is read from AIRFLOW_VAR_MY_VAR) before asking Airflow,
+	// mirroring the Python SDK and making local development and tests easy.
+	VariableEnvPrefix = "AIRFLOW_VAR_"
+
+	// ConnectionEnvPrefix is the matching prefix for Connections. The
+	// connection env fallback is not wired up yet, so it is currently unused.
 	ConnectionEnvPrefix = "AIRFLOW_CONN_"
+
+	// XComReturnValueKey is the key Airflow uses for a task's returned value.
+	XComReturnValueKey = "return_value"
 )
 
 // VariableClient reads Airflow Variables.
@@ -40,8 +47,8 @@ const (
 type VariableClient interface {
 	// GetVariable returns the value of an Airflow Variable.
 	//
-	// It will first look in the os.environ for the appropriately named variable, and if not found there will
-	// fallback to asking the API server
+	// It first looks in the process environment for the appropriately named
+	// variable and, if absent, asks Airflow through the coordinator.
 	//
 	// If the variable is not found error will be a wrapped ``VariableNotFound``:
 	//
@@ -49,7 +56,7 @@ type VariableClient interface {
 	//		if errors.Is(err, VariableNotFound) {
 	//				// Handle not found, set default, return custom error etc
 	//		} else {
-	//				// Other errors here, such as http network timeouts etc.
+	//				// Other errors here, such as transport timeouts etc.
 	//		}
 	GetVariable(ctx context.Context, key string) (string, error)
 
@@ -62,21 +69,32 @@ type VariableClient interface {
 	UnmarshalJSONVariable(ctx context.Context, key string, pointer any) error
 }
 
+// ConnectionClient reads Airflow Connections.
 type ConnectionClient interface {
 	// GetConnection returns the value of an Airflow Connection.
 	//
 	// If the conn is not found error will be a wrapped ``ConnectionNotFound``:
 	//
 	//		conn, err := client.GetConnection(ctx, "my-db")
-	//		if errors.Is(err, ConnectinNotFound) {
+	//		if errors.Is(err, ConnectionNotFound) {
 	//				// Handle not found, set default, return custom error etc
 	//		} else {
-	//				// Other errors here, such as http network timeouts etc.
+	//				// Other errors here, such as transport timeouts etc.
 	//		}
 	GetConnection(ctx context.Context, connID string) (Connection, error)
 }
 
+// XComClient reads and writes XCom values. Most tasks never need this: to
+// publish a result, return a value from the task function and the runtime
+// pushes it as the return-value XCom. Reach for these methods only to read
+// another task's XCom, or to push under a custom key.
 type XComClient interface {
+	// GetXCom returns the value stored under key by the task identified by
+	// dagId/runId/taskId. For a mapped task instance pass its mapIndex,
+	// otherwise pass nil. If no value exists the error wraps XComNotFound.
+	//
+	// value is reserved for future typed decoding and is currently ignored; the
+	// stored value is returned as the first result instead.
 	GetXCom(
 		ctx context.Context,
 		dagId, runId, taskId string,
@@ -84,9 +102,15 @@ type XComClient interface {
 		key string,
 		value any,
 	) (any, error)
-	PushXCom(ctx context.Context, ti api.TaskInstance, key string, value any) error
+
+	// PushXCom stores value under key for the given task instance ti.
+	PushXCom(ctx context.Context, ti TaskInstance, key string, value any) error
 }
 
+// Client is the full task-facing API: read Variables and Connections, and
+// read/write XCom. A task that declares an sdk.Client parameter is handed one
+// by the runtime. If a task needs only one capability, ask for the narrower
+// VariableClient, ConnectionClient, or XComClient instead.
 type Client interface {
 	VariableClient
 	ConnectionClient

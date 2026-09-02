@@ -25,6 +25,8 @@ from fastapi import FastAPI
 import airflow.api_fastapi.app as app_module
 import airflow.plugins_manager as plugins_manager
 
+from tests_common.test_utils.config import conf_vars
+
 pytestmark = pytest.mark.db_test
 
 
@@ -114,6 +116,79 @@ def test_plugin_with_invalid_url_prefix(caplog, invalid_prefix, expected_message
     assert not any(r.path == invalid_prefix for r in app.routes)
 
 
+class TestInitPluginsTeamAuthorization:
+    """A team-scoped plugin's app must be mounted behind the team authorization
+    middleware, since Airflow applies no authorization to plugin apps itself."""
+
+    @staticmethod
+    def _mount_for(app, url_prefix):
+        return next(route for route in app.routes if getattr(route, "path", None) == url_prefix)
+
+    @staticmethod
+    def _has_team_middleware(mount, team_name):
+        from airflow.api_fastapi.auth.middlewares.team_authorization import TeamAuthorizationMiddleware
+
+        # Starlette applies a Mount's middleware by wrapping the sub-app, so the mounted
+        # app *is* the middleware instance when the plugin is team-scoped.
+        return isinstance(mount.app, TeamAuthorizationMiddleware) and mount.app.team_name == team_name
+
+    @conf_vars({("core", "multi_team"): "True"})
+    def test_team_plugin_app_is_wrapped(self):
+        fastapi_apps = [
+            {"name": "team_a_app", "app": FastAPI(), "url_prefix": "/team_a", "team_name": "team_a"}
+        ]
+        app = FastAPI()
+        with mock.patch.object(plugins_manager, "get_fastapi_plugins", return_value=(fastapi_apps, [])):
+            app_module.init_plugins(app)
+
+        assert self._has_team_middleware(self._mount_for(app, "/team_a"), "team_a")
+
+    @conf_vars({("core", "multi_team"): "True"})
+    def test_global_plugin_app_is_not_wrapped(self):
+        fastapi_apps = [{"name": "global_app", "app": FastAPI(), "url_prefix": "/global", "team_name": None}]
+        app = FastAPI()
+        with mock.patch.object(plugins_manager, "get_fastapi_plugins", return_value=(fastapi_apps, [])):
+            app_module.init_plugins(app)
+
+        mount = self._mount_for(app, "/global")
+        assert not self._has_team_middleware(mount, None)
+
+    @conf_vars({("core", "multi_team"): "False"})
+    def test_team_plugin_app_is_not_wrapped_when_multi_team_disabled(self):
+        fastapi_apps = [
+            {"name": "team_a_app", "app": FastAPI(), "url_prefix": "/team_a", "team_name": "team_a"}
+        ]
+        app = FastAPI()
+        with mock.patch.object(plugins_manager, "get_fastapi_plugins", return_value=(fastapi_apps, [])):
+            app_module.init_plugins(app)
+
+        assert not self._has_team_middleware(self._mount_for(app, "/team_a"), "team_a")
+
+    @conf_vars({("core", "multi_team"): "True"})
+    def test_team_plugin_root_middleware_is_skipped(self, caplog):
+        root_middlewares = [
+            {"name": "team_a_middleware", "middleware": mock.MagicMock(), "team_name": "team_a"}
+        ]
+        app = FastAPI()
+        with mock.patch.object(plugins_manager, "get_fastapi_plugins", return_value=([], root_middlewares)):
+            with mock.patch.object(app, "add_middleware") as mock_add_middleware:
+                app_module.init_plugins(app)
+
+        mock_add_middleware.assert_not_called()
+        assert any("Skipping root middleware team_a_middleware" in rec.message for rec in caplog.records)
+
+    @conf_vars({("core", "multi_team"): "True"})
+    def test_global_root_middleware_is_still_added(self):
+        middleware = mock.MagicMock()
+        root_middlewares = [{"name": "global_middleware", "middleware": middleware, "team_name": None}]
+        app = FastAPI()
+        with mock.patch.object(plugins_manager, "get_fastapi_plugins", return_value=([], root_middlewares)):
+            with mock.patch.object(app, "add_middleware") as mock_add_middleware:
+                app_module.init_plugins(app)
+
+        mock_add_middleware.assert_called_once_with(middleware)
+
+
 class TestGetCookiePath:
     def test_default_returns_slash(self):
         """When no base_url is configured, get_cookie_path() should return '/'."""
@@ -168,3 +243,47 @@ def test_create_auth_manager_thread_safety():
     assert call_count == 1
 
     app_module.purge_cached_app()
+
+
+class TestInitializeApiServerStats:
+    """
+    Ensure that stats subsystem is properly initialized in API server.
+    """
+
+    def test_initializes_api_server_stats_with_factory(self):
+        """It initializes the Stats singleton in the API server using the configured factory."""
+        sentinel_factory = object()
+        with (
+            mock.patch("airflow._shared.observability.metrics.stats") as mock_stats,
+            mock.patch(
+                "airflow.observability.metrics.stats_utils.get_stats_factory",
+                return_value=sentinel_factory,
+            ) as mock_get_factory,
+        ):
+            app_module._initialize_api_server_stats()
+
+            mock_get_factory.assert_called_once_with()
+            mock_stats.initialize.assert_called_once()
+            _, kwargs = mock_stats.initialize.call_args
+            assert kwargs["factory"] is sentinel_factory
+            assert isinstance(kwargs["export_legacy_names"], bool)
+
+    def test_stats_failure_does_not_block_startup(self):
+        """A metrics misconfiguration must not prevent the API server from starting."""
+        with (
+            mock.patch("airflow._shared.observability.metrics.stats") as mock_stats,
+            mock.patch("airflow.observability.metrics.stats_utils.get_stats_factory"),
+            mock.patch("airflow.api_fastapi.app.log") as mock_logger,
+        ):
+            mock_stats.initialize.side_effect = RuntimeError("boom")
+
+            # Must not raise.
+            app_module._initialize_api_server_stats()
+
+        mock_logger.warning.assert_called_once()
+
+    def test_stats_initialized_during_lifespan(self, client):
+        """_initialize_api_server_stats must be called as part of the app lifespan, not just defined."""
+        with mock.patch.object(app_module, "_initialize_api_server_stats") as mock_init:
+            with client():
+                mock_init.assert_called_once()

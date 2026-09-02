@@ -28,6 +28,37 @@
 Changelog
 ---------
 
+4.9.3
+.....
+
+Bug Fixes
+~~~~~~~~~
+
+* ``Fix DbtCloudRunJobOperator having false failures during deferred polling (#70581)``
+* ``Derive DbtCloudGetJobRunArtifactOperator default file name after rendering (#70336)``
+
+Doc-only
+~~~~~~~~
+
+* ``Document each provider's optional extras in its docs index (#69478)``
+
+.. Below changes are excluded from the changelog. Move them to
+   appropriate section above if needed. Do not delete the lines(!):
+   * ``Use common.compat.sdk for timezone imports in providers (#70492)``
+   * ``Prepare providers release 2026-07-22 (#70256)``
+   * ``Fix inconsistency between generated provider docs and pyproject.toml (#68991)``
+
+4.9.2
+.....
+
+Misc
+~~~~
+
+* ``Bump aiohttp>=3.14.0 (#67978)``
+
+.. Below changes are excluded from the changelog. Move them to
+   appropriate section above if needed. Do not delete the lines(!):
+
 4.9.1
 .....
 
@@ -402,7 +433,7 @@ Misc
 .....
 
 .. note::
-  This version has no code changes. It's released due to yank of previous version due to packaging issues.
+  This version contains no code changes. It was released to replace a previous version that was yanked due to a packaging issue.
 
 4.1.0
 .....

@@ -19,7 +19,9 @@
 import { MutationCache, QueryClient } from "@tanstack/react-query";
 
 import { OpenAPI } from "openapi/requests/core/OpenAPI";
-import { toaster } from "src/components/ui";
+
+import { toaster } from "src/system-components";
+
 import i18n from "src/i18n/config";
 import { getErrorStatus } from "src/utils";
 
@@ -28,6 +30,12 @@ OpenAPI.BASE = document.querySelector("head>base")?.getAttribute("href") ?? "";
 if (OpenAPI.BASE.endsWith("/")) {
   OpenAPI.BASE = OpenAPI.BASE.slice(0, -1);
 }
+
+// Encode path params as full URI components so values containing "/" (e.g. a variable key like
+// "/foo") become "%2Ffoo" rather than a literal "//", which proxies may collapse. The generated
+// client otherwise defaults to encodeURI, which leaves "/" untouched.
+// The backend automatically decodes path params.
+OpenAPI.ENCODE_PATH = encodeURIComponent;
 
 const RETRY_COUNT = 3;
 

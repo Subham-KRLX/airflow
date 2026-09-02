@@ -72,6 +72,7 @@ Task Decorators:
 .. autoapifunction:: airflow.sdk.teardown
 
 .. autofunction:: airflow.sdk.task
+.. autofunction:: airflow.sdk.result
 .. autofunction:: airflow.sdk.setup
 .. autofunction:: airflow.sdk.teardown
 .. autofunction:: airflow.sdk.asset
@@ -114,6 +115,10 @@ Deadline Alerts
 .. autoclass:: airflow.sdk.DeadlineAlert
 
 .. autoclass:: airflow.sdk.DeadlineReference
+
+.. autoclass:: airflow.sdk.BaseDeadlineReference
+
+.. autofunction:: airflow.sdk.deadline_reference
 
 Connections & Variables
 -----------------------
@@ -213,7 +218,7 @@ Timetables
 
 .. autoapiclass:: airflow.sdk.MultipleCronTriggerTimetable
 
-.. autoapiclass:: airflow.sdk.PartitionAtRuntime
+.. autoapiclass:: airflow.sdk.PartitionedAtRuntime
 
 .. autoapiclass:: airflow.sdk.PartitionedAssetTimetable
 
@@ -241,9 +246,17 @@ Partition Mapper
 
 .. autoapiclass:: airflow.sdk.RollupMapper
 
+.. autoapiclass:: airflow.sdk.WaitForAll
+
+.. autoapiclass:: airflow.sdk.MinimumCount
+
 .. autoapiclass:: airflow.sdk.ProductMapper
 
 .. autoapiclass:: airflow.sdk.AllowedKeyMapper
+
+.. autoapiclass:: airflow.sdk.FanOutMapper
+
+.. autoapiclass:: airflow.sdk.FixedKeyMapper
 
 Rollup Windows
 ~~~~~~~~~~~~~~
@@ -261,6 +274,8 @@ Rollup Windows
 .. autoapiclass:: airflow.sdk.QuarterWindow
 
 .. autoapiclass:: airflow.sdk.YearWindow
+
+.. autoapiclass:: airflow.sdk.SegmentWindow
 
 I/O Helpers
 -----------
@@ -282,6 +297,14 @@ See :doc:`apache-airflow:authoring-and-scheduling/language-sdks/index` for a con
 .. rubric:: JVM
 
 .. autoapiclass:: airflow.sdk.coordinators.java.JavaCoordinator
+
+.. rubric:: Native executable (e.g. Go)
+
+.. autoapiclass:: airflow.sdk.coordinators.executable.ExecutableCoordinator
+
+.. rubric:: Node.js (TypeScript)
+
+.. autoapiclass:: airflow.sdk.coordinators.node.NodeCoordinator
 
 Execution Time Components
 -------------------------

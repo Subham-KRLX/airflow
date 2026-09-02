@@ -142,12 +142,6 @@ DEVELOPER_PARAMETERS: dict[str, list[dict[str, str | list[str]]]] = {
             ],
         },
         {
-            "name": "Run experimental workers",
-            "options": [
-                "--worker-type",
-            ],
-        },
-        {
             "name": "Installing packages after entering shell",
             "options": [
                 "--airflow-constraints-location",
@@ -170,7 +164,6 @@ DEVELOPER_PARAMETERS: dict[str, list[dict[str, str | list[str]]]] = {
                 "--allow-pre-releases",
                 "--use-distributions-from-dist",
                 "--install-airflow-python-client",
-                "--sdk",
             ],
         },
         {
@@ -254,19 +247,12 @@ DEVELOPER_PARAMETERS: dict[str, list[dict[str, str | list[str]]]] = {
                 "--github-repository",
                 "--builder",
                 "--use-uv",
-                "--sdk",
             ],
         },
         {
             "name": "Mounting the sources and volumes",
             "options": [
                 "--mount-sources",
-            ],
-        },
-        {
-            "name": "Run experimental workers",
-            "options": [
-                "--worker-type",
             ],
         },
         {

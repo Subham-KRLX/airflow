@@ -27,6 +27,114 @@
 Changelog
 ---------
 
+4.3.1
+.....
+
+Misc
+~~~~
+
+* ``UI: Stop using React.FC and the React type namespace (#71563)``
+* ``Bump eslint-plugin-react-refresh to 0.5.4 (#71631)``
+* ``Bump @testing-library/jest-dom to 7.0.1, @types/node to 26.2.0, eslint to 10.8.1 and happy-dom to 20.11.2 (#71601)``
+* ``Bump axios to 1.19.0, react-router-dom to 7.18.2, vite to 8.2.1, typescript-eslint to 8.66.0 and 10 other UI dependencies (#71420)``
+
+.. Below changes are excluded from the changelog. Move them to
+   appropriate section above if needed. Do not delete the lines(!):
+   * ``[main] CI: Upgrade important CI environment (#70501)``
+
+
+4.3.0
+.....
+
+Features
+~~~~~~~~
+
+* ``Add queue parameter to edge list-workers subcommand (#70436)``
+
+Bug Fixes
+~~~~~~~~~
+
+* ``Edge3: Exit non-zero when worker admin CLI commands fail (#70112)``
+
+Misc
+~~~~
+
+* ``Bump the edge-ui-package-updates group across 1 directory with 3 updates (#70848)``
+* ``Bump the edge-ui-package-updates group across 1 directory with 31 updates (#70616)``
+* ``Add team_name tagging to multi team dag metrics (#69943)``
+* ``Bump @types/node to 26.1.2 (#70870)``
+
+.. Below changes are excluded from the changelog. Move them to
+   appropriate section above if needed. Do not delete the lines(!):
+   * ``Fix operators declaring template_fields/template_ext as bare strings (#70916)``
+
+4.2.0
+.....
+
+Features
+~~~~~~~~
+
+* ``Add worker-name filter to 'airflow edge list-workers' (#70095)``
+* ``Add team name tags to Edge worker metrics (#69149)``
+
+Bug Fixes
+~~~~~~~~~
+
+* ``Bring back edge worker metric compatibility with Airflow 3.2 (#67328)``
+
+Misc
+~~~~
+
+* ``Upgrade NPM dependencies in edge provider (#70253)``
+* ``Bump axios in /providers/edge3/src/airflow/providers/edge3/plugins/www (#70145)``
+* ``Change log level from info to debug for Edge job fetch (#68736)``
+
+.. Below changes are excluded from the changelog. Move them to
+   appropriate section above if needed. Do not delete the lines(!):
+   * ``Fix flaky static checks caused by migration-reference hook race (#70170)``
+   * ``[main] Upgrade important CI environment (#69694)``
+   * ``Fix flaky test_adjust_maintenance_mode_based_on_sysinfo_exit (#69738)``
+
+
+4.1.0
+.....
+
+Features
+~~~~~~~~
+
+* ``Add team_name tag to Edge executor sync metric (#69005)``
+
+.. Below changes are excluded from the changelog. Move them to
+   appropriate section above if needed. Do not delete the lines(!):
+   * ``Fix inconsistency between generated provider docs and pyproject.toml (#68991)``
+   * ``Thread version_data through BundleInfo to worker-side bundle initialization (#67217)``
+
+4.0.0
+.....
+
+.. note::
+    The worker-bound ``TaskInstance`` fields exchanged over the Edge worker API are now
+    defined by the versioned execution API schema instead of a duplicated ``TaskInstanceDTO``
+    (#68390). The regenerated Edge worker API spec drops ``parent_context_carrier`` and sources
+    the ``queue`` field from the shared schema. Upgrade your Edge workers together with the
+    Airflow API server so both sides of the worker API agree on the contract.
+
+Breaking changes
+~~~~~~~~~~~~~~~~
+
+* ``Version the worker-bound TaskInstance fields in the execution API schema (#68390)``
+
+Doc-only
+~~~~~~~~
+
+* ``Fix typo and restore SVG diagram headers (#68435)``
+* ``Fix Typo in EdgeExecutor Architecture diagram (#68401)``
+
+.. Below changes are excluded from the changelog. Move them to
+   appropriate section above if needed. Do not delete the lines(!):
+   * ``Fix BackfillDagRun.partition_key type annotation (str, not datetime) (#68432)``
+   * ``Bump the edge-ui-package-updates group across 1 directory with 14 updates (#68469)``
+
 3.8.0
 .....
 
@@ -37,11 +145,15 @@ Features
 ~~~~~~~~
 
 * ``Fix edge executor to support handling execute callback workload (#67679)``
+* ``Add 'awaiting_input' task state for Human-in-the-loop, off the triggerer (#68028)``
+* ``Add async connection testing via workers for security isolation (#62343)``
 
 Bug Fixes
 ~~~~~~~~~
 
 * ``Fix Edge worker fork mode reporting supervisor failures as success (#67887)``
+* ``Fix team name authorization bypass in edgeworker (#64556)``
+* ``Remove unnecessarily added logging in edge worker (#68019)``
 
 Misc
 ~~~~
@@ -52,6 +164,8 @@ Misc
 * ``Add prek hook to enforce HTTPException is imported from fastapi (#67367)``
 * ``Remove dead auth code from Airflow2 times in Edge (#67374)``
 * ``Add prek hook enforcing the "example" tag on example DAGs (#67354)``
+* ``Bump the edge-ui-package-updates group across 1 directory with 7 updates (#68087)``
+* ``Bump aiohttp regarding dependabot warning (#67978)``
 
 Doc-only
 ~~~~~~~~

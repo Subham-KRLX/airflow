@@ -16,12 +16,16 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { Button, Icon, Spinner, Text, VStack } from "@chakra-ui/react";
 import { useEffect, useState } from "react";
+
+import { Button, Icon, Spinner, Text, VStack } from "@chakra-ui/react";
 import { useTranslation } from "react-i18next";
 import { GoAlertFill } from "react-icons/go";
 
-import { Dialog } from "src/components/ui";
+import type { ClearTaskInstancesBody } from "openapi/requests/types.gen";
+
+import { Dialog } from "src/system-components";
+
 import { useClearTaskInstancesDryRun } from "src/queries/useClearTaskInstancesDryRun";
 import { getRelativeTime } from "src/utils/datetimeUtils";
 
@@ -35,6 +39,7 @@ type Props = {
     onlyFailed?: boolean;
     past?: boolean;
     taskId: string;
+    taskIds?: ClearTaskInstancesBody["task_ids"];
     upstream?: boolean;
   };
   readonly onClose: () => void;
@@ -51,6 +56,7 @@ const ClearTaskInstanceConfirmationDialog = ({
   preventRunningTask,
 }: Props) => {
   const { t: translate } = useTranslation();
+  const useExplicitTaskIds = dagDetails?.taskIds !== undefined;
   const { data, isFetching } = useClearTaskInstancesDryRun({
     dagId: dagDetails?.dagId ?? "",
     options: {
@@ -62,13 +68,14 @@ const ClearTaskInstanceConfirmationDialog = ({
     },
     requestBody: {
       dag_run_id: dagDetails?.dagRunId ?? "",
-      include_downstream: dagDetails?.downstream,
+      include_downstream: useExplicitTaskIds ? false : dagDetails?.downstream,
       include_future: dagDetails?.future,
       include_past: dagDetails?.past,
-      include_upstream: dagDetails?.upstream,
+      include_upstream: useExplicitTaskIds ? false : dagDetails?.upstream,
       only_failed: dagDetails?.onlyFailed,
-      task_ids:
-        dagDetails?.mapIndex === undefined
+      task_ids: useExplicitTaskIds
+        ? dagDetails.taskIds
+        : dagDetails?.mapIndex === undefined
           ? [dagDetails?.taskId ?? ""]
           : [[dagDetails.taskId, dagDetails.mapIndex]],
     },

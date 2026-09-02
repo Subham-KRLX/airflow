@@ -20,18 +20,23 @@ import { Box, HStack, Text } from "@chakra-ui/react";
 import { FiDatabase } from "react-icons/fi";
 import { PiRectangleDashed } from "react-icons/pi";
 
-import type { NextRunAssetEventResponse } from "openapi/requests/types.gen";
+import type {
+  AssetExpressionAlias,
+  AssetExpressionAsset,
+  NextRunAssetEventResponse,
+} from "openapi/requests/types.gen";
+
+import { RouterLink } from "src/system-components";
+
 import { RollupKeyChecklistPopover } from "src/components/RollupKeyChecklist";
-import { RouterLink } from "src/components/ui";
 
 import Time from "../Time";
-import type { AssetSummary } from "./types";
 
 export const AssetNode = ({
   asset,
   event,
 }: {
-  readonly asset: AssetSummary;
+  readonly asset: AssetExpressionAlias | AssetExpressionAsset;
   readonly event?: NextRunAssetEventResponse;
 }) => {
   const isFullyReceived = Boolean(event?.last_update);

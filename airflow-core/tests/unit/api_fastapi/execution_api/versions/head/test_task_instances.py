@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest import mock
 from uuid import UUID, uuid4
@@ -31,6 +32,7 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import StatusCode
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+from pydantic import ValidationError
 from sqlalchemy import select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -48,12 +50,12 @@ from airflow.models import RenderedTaskInstanceFields, TaskReschedule, Trigger
 from airflow.models.asset import AssetActive, AssetAliasModel, AssetEvent, AssetModel
 from airflow.models.dag import DagModel
 from airflow.models.log import Log
-from airflow.models.task_store import TaskStoreModel
+from airflow.models.task_state_store import TaskStateStoreModel
 from airflow.models.taskinstance import TaskInstance
 from airflow.models.taskinstancehistory import TaskInstanceHistory
 from airflow.providers.standard.operators.empty import EmptyOperator
 from airflow.sdk import Asset, TaskGroup, TriggerRule, task, task_group
-from airflow.state.metastore import MetastoreStoreBackend
+from airflow.state.metastore import MetastoreBackend
 from airflow.utils.state import DagRunState, State, TaskInstanceState, TerminalTIState
 
 from tests_common.test_utils.config import conf_vars
@@ -65,6 +67,7 @@ from tests_common.test_utils.db import (
     clear_db_serialized_dags,
     clear_rendered_ti_fields,
 )
+from unit.listeners import asset_listener
 
 if TYPE_CHECKING:
     from airflow.sdk.api.client import Client
@@ -159,17 +162,57 @@ def test_id_matches_sub_claim(client, session, create_task_instance):
 
 
 class TestTIRunState:
+    RUN_PAYLOAD = {
+        "state": "running",
+        "hostname": "random-hostname",
+        "unixname": "random-unixname",
+        "pid": 100,
+        "start_date": "2024-09-30T12:00:00Z",
+    }
+
     def setup_method(self):
         clear_db_logs()
         clear_db_runs()
         clear_db_serialized_dags()
         clear_db_dags()
+        clear_db_assets()
 
     def teardown_method(self):
         clear_db_logs()
         clear_db_runs()
         clear_db_serialized_dags()
         clear_db_dags()
+        clear_db_assets()
+
+    def test_ti_run_context_exposes_consumed_event_partition_key(self, client, session, create_task_instance):
+        """The partition key of each consumed asset event is returned in the run context."""
+        ti = create_task_instance(
+            task_id="test_consumed_event_partition_key",
+            state=State.QUEUED,
+            session=session,
+        )
+        asset = AssetModel(name="upstream", uri="s3://bucket/upstream", group="asset", extra={})
+        session.add_all([asset, AssetActive.for_asset(asset)])
+        session.flush()
+        ti.dag_run.consumed_asset_events.append(
+            AssetEvent(asset_id=asset.id, source_dag_id="src", source_run_id="r1", partition_key="2024-01-15")
+        )
+        session.commit()
+
+        response = client.patch(
+            f"/execution/task-instances/{ti.id}/run",
+            json={
+                "state": "running",
+                "hostname": "h",
+                "unixname": "u",
+                "pid": 1,
+                "start_date": "2024-09-30T12:00:00Z",
+            },
+        )
+
+        assert response.status_code == 200
+        events = response.json()["dag_run"]["consumed_asset_events"]
+        assert [e["partition_key"] for e in events] == ["2024-01-15"]
 
     @pytest.mark.parametrize(
         ("max_tries", "should_retry"),
@@ -236,6 +279,7 @@ class TestTIRunState:
                 "triggering_user_name": None,
                 "consumed_asset_events": [],
                 "partition_key": None,
+                "partition_date": None,
                 "note": None,
                 "team_name": None,
             },
@@ -336,6 +380,110 @@ class TestTIRunState:
         extras = mock_gen.generate.call_args.kwargs["extras"]
         assert extras["scope"] == "execution"
         assert extras["sub"] == str(ti.id)
+
+    def test_ti_run_returns_arg_bindings_for_stub_task(self, client, dag_maker):
+        """A stub task's TaskFlow arg spec is extracted from the serialized Dag and returned."""
+        with dag_maker("test_arg_bindings_dag", serialized=True):
+
+            @task.stub
+            def extract(): ...
+
+            @task.stub
+            def transform(country: str, extracted: dict, limit: int = 10): ...
+
+            transform("uk", extract())
+
+        dr = dag_maker.create_dagrun()
+        tis = {ti.task_id: ti for ti in dr.get_task_instances()}
+        for ti in tis.values():
+            ti.set_state(State.QUEUED)
+        dag_maker.session.flush()
+
+        response = client.patch(f"/execution/task-instances/{tis['transform'].id}/run", json=self.RUN_PAYLOAD)
+        assert response.status_code == 200
+        assert response.json()["arg_bindings"] == [
+            {"name": "country", "kind": "literal", "value_schema": {"type": "string"}, "value": "uk"},
+            {
+                "name": "extracted",
+                "kind": "xcom",
+                "value_schema": {"type": "object", "additionalProperties": True},
+                "task_id": "extract",
+            },
+            {
+                "name": "limit",
+                "kind": "literal",
+                "value_schema": {"type": "integer", "format": "int64"},
+                "value": 10,
+                "from_default": True,
+            },
+        ]
+
+        # An argless stub has no captured spec, so the field stays unset.
+        response = client.patch(f"/execution/task-instances/{tis['extract'].id}/run", json=self.RUN_PAYLOAD)
+        assert response.status_code == 200
+        assert "arg_bindings" not in response.json()
+
+    @mock.patch(
+        "airflow.api_fastapi.execution_api.routes.task_instances.get_arg_bindings",
+        autospec=True,
+        return_value=[{"name": "country", "kind": "hologram", "value": "uk"}],
+    )
+    def test_ti_run_reports_invalid_arg_bindings_spec(self, _, client, dag_maker):
+        """A serialized spec this core version cannot validate fails with a structured error, not a bare 500."""
+        with dag_maker("test_invalid_arg_bindings_dag", serialized=True):
+
+            @task.stub
+            def transform(country: str): ...
+
+            transform("uk")
+
+        dr = dag_maker.create_dagrun()
+        (ti,) = dr.get_task_instances()
+        ti.set_state(State.QUEUED)
+        dag_maker.session.flush()
+
+        response = client.patch(f"/execution/task-instances/{ti.id}/run", json=self.RUN_PAYLOAD)
+
+        assert response.status_code == 500
+        assert response.json()["detail"]["reason"] == "invalid_arg_bindings"
+
+    def test_ti_run_returns_no_arg_bindings_for_mapped_stub(self, client, dag_maker):
+        """Mapped stubs keep the legacy ignored-args behavior until per-map-index delivery lands."""
+        with dag_maker("test_mapped_stub_ignored_args", serialized=True):
+
+            @task.stub
+            def transform(country: str): ...
+
+            transform.expand(country=["uk", "fr"])
+
+        dr = dag_maker.create_dagrun()
+        ti = next(t for t in dr.get_task_instances() if t.map_index == 0)
+        ti.set_state(State.QUEUED)
+        dag_maker.session.flush()
+
+        response = client.patch(f"/execution/task-instances/{ti.id}/run", json=self.RUN_PAYLOAD)
+        assert response.status_code == 200
+        assert "arg_bindings" not in response.json()
+
+    def test_arg_bindings_adapter_rejects_unknown_kind(self):
+        """The discriminated union refuses serialized specs with an unrecognised kind."""
+        from airflow.api_fastapi.execution_api.datamodels.task_arg_binding import get_arg_bindings_adapter
+
+        with pytest.raises(ValidationError, match="does not match any of the expected tags"):
+            get_arg_bindings_adapter().validate_python(
+                [{"name": "country", "kind": "template", "value": "x"}]
+            )
+
+    def test_arg_bindings_adapter_carries_value_schema_fragments_verbatim(self):
+        """The fragment is free-form JSON schema: every keyword the provider generated must
+        survive validation untouched -- a typed model would silently strip what it doesn't know."""
+        from airflow.api_fastapi.execution_api.datamodels.task_arg_binding import get_arg_bindings_adapter
+
+        fragment = {"anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}]}
+        (binding,) = get_arg_bindings_adapter().validate_python(
+            [{"name": "tags", "kind": "literal", "value_schema": fragment, "value": ["a"]}]
+        )
+        assert binding.value_schema == fragment
 
     def test_dynamic_task_mapping_with_parse_time_value(self, client, dag_maker):
         """Test that dynamic task mapping works correctly with parse-time values."""
@@ -997,6 +1145,65 @@ class TestTIRunState:
         assert response.status_code == 200
         assert response.json()["dag_run"]["team_name"] == (team_name if expect_team else None)
 
+    def test_ti_run_team_name_is_not_served_from_a_stale_cache(
+        self, client, session, dag_maker, time_machine
+    ):
+        """
+        ``ti_run`` must eager load the team rather than fall back to the cached resolver.
+
+        The fallback caches per dag_id for ``team_name_cache_ttl`` seconds, so a Dag whose team
+        was looked up before it moved bundles would keep reporting the old team to the worker.
+        """
+        from airflow.models.dag import clear_team_name_cache
+        from airflow.models.dagbundle import DagBundleModel
+        from airflow.models.team import Team
+
+        instant = timezone.parse("2024-09-30T12:00:00Z")
+        time_machine.move_to(instant, tick=False)
+
+        dag_id = str(uuid4())
+        with dag_maker(dag_id=dag_id, session=session):
+            EmptyOperator(task_id="task")
+        dr = dag_maker.create_dagrun(
+            run_id="test", logical_date=instant, state=DagRunState.RUNNING, start_date=instant
+        )
+        ti = dr.get_task_instance(task_id="task")
+        ti.set_state(State.QUEUED)
+
+        for suffix in ("old", "new"):
+            bundle = DagBundleModel(name=f"bundle-{suffix}-{dag_id}")
+            bundle.teams.append(Team(name=f"team-{suffix}-{dag_id[:8]}"))
+            session.add(bundle)
+        session.flush()
+        session.execute(
+            update(DagModel).where(DagModel.dag_id == dag_id).values(bundle_name=f"bundle-old-{dag_id}")
+        )
+        session.commit()
+
+        with conf_vars({("core", "multi_team"): "True"}):
+            clear_team_name_cache()
+            # Warm the cache with the old team, then move the Dag to the other bundle.
+            assert DagModel.get_team_name(dag_id, session=session) == f"team-old-{dag_id[:8]}"
+            session.execute(
+                update(DagModel).where(DagModel.dag_id == dag_id).values(bundle_name=f"bundle-new-{dag_id}")
+            )
+            session.commit()
+
+            response = client.patch(
+                f"/execution/task-instances/{ti.id}/run",
+                json={
+                    "state": "running",
+                    "hostname": "h",
+                    "unixname": "u",
+                    "pid": 1,
+                    "start_date": "2024-09-30T12:00:00Z",
+                },
+            )
+            clear_team_name_cache()
+
+        assert response.status_code == 200
+        assert response.json()["dag_run"]["team_name"] == f"team-new-{dag_id[:8]}"
+
     def test_ti_run_creates_audit_log(self, client, session, create_task_instance, time_machine):
         """Test that transitioning to RUNNING creates an audit log record."""
         instant_str = "2024-09-30T12:00:00Z"
@@ -1261,6 +1468,83 @@ class TestTIUpdateState:
         assert event[0].asset == AssetModel(name="my-task", uri="s3://bucket/my-task", extra={})
         assert event[0].extra == expected_extra
 
+    def test_ti_update_state_to_success_runs_deferred_asset_listener_callbacks(
+        self, client, session, create_task_instance, listener_manager
+    ):
+        """The success endpoint runs the deferred asset listener callbacks after committing."""
+        asset_listener.clear()
+        listener_manager(asset_listener)
+
+        asset = AssetModel(id=1, name="my-task", uri="s3://bucket/my-task", group="asset", extra={})
+        session.add_all([asset, AssetActive.for_asset(asset)])
+
+        ti = create_task_instance(
+            task_id="test_ti_update_state_to_success_runs_deferred_asset_listener_callbacks",
+            start_date=DEFAULT_START_DATE,
+            state=State.RUNNING,
+        )
+        session.commit()
+
+        response = client.patch(
+            f"/execution/task-instances/{ti.id}/state",
+            json={
+                "state": "success",
+                "end_date": DEFAULT_END_DATE.isoformat(),
+                "task_outlets": [{"name": "my-task", "uri": "s3://bucket/my-task", "type": "Asset"}],
+                "outlet_events": [],
+            },
+        )
+
+        assert response.status_code == 204
+
+        # Notifications are deferred during registration and run by the endpoint after the
+        # TI state is committed (and the task_instance row lock released).
+        assert len(asset_listener.changed) == 1
+        assert asset_listener.changed[0].uri == "s3://bucket/my-task"
+        assert len(asset_listener.emitted) == 1
+
+    def test_ti_update_state_to_success_rolls_back_partial_asset_registration(
+        self, client, session, create_task_instance
+    ):
+        """A failure partway through asset registration rolls back the partial writes.
+
+        The endpoint's exception handler marks the TI failed and commits; the explicit rollback
+        ensures an asset event flushed before the failure is not committed alongside it.
+        """
+        asset = AssetModel(id=1, name="my-task", uri="s3://bucket/my-task", group="asset", extra={})
+        session.add_all([asset, AssetActive.for_asset(asset)])
+
+        ti = create_task_instance(
+            task_id="test_ti_update_state_to_success_rolls_back_partial_asset_registration",
+            start_date=DEFAULT_START_DATE,
+            state=State.RUNNING,
+        )
+        session.commit()
+
+        def _partial_then_fail(ti, task_outlets, outlet_events, *, session):
+            # Simulate a half-way registration: an asset event is flushed, then registration
+            # fails before the endpoint commits.
+            session.add(AssetEvent(asset_id=asset.id))
+            session.flush()
+            raise RuntimeError("boom partway through outlets")
+
+        with mock.patch.object(TaskInstance, "register_asset_changes_in_db", side_effect=_partial_then_fail):
+            response = client.patch(
+                f"/execution/task-instances/{ti.id}/state",
+                json={
+                    "state": "success",
+                    "end_date": DEFAULT_END_DATE.isoformat(),
+                    "task_outlets": [{"name": "my-task", "uri": "s3://bucket/my-task", "type": "Asset"}],
+                    "outlet_events": [],
+                },
+            )
+
+        assert response.status_code == 204
+        session.expire_all()
+        # The partially-written asset event was rolled back, and the TI is marked failed.
+        assert session.scalars(select(AssetEvent)).all() == []
+        assert session.get(TaskInstance, ti.id).state == State.FAILED
+
     @pytest.mark.parametrize(
         ("outlet_events", "expected_extra"),
         [
@@ -1330,6 +1614,46 @@ class TestTIUpdateState:
             assert len(events) == 1
             assert events[0].asset == AssetModel(name="my-task", uri="s3://bucket/my-task", extra={})
             assert events[0].extra == expected_extra
+
+    @pytest.mark.parametrize(
+        ("partition_key", "expected_status"),
+        [
+            pytest.param("a" * 250, 204, id="at_limit_accepted"),
+            pytest.param("a" * 251, 422, id="over_limit_rejected"),
+            pytest.param("", 422, id="empty_rejected"),
+            pytest.param("   ", 422, id="whitespace_rejected"),
+        ],
+    )
+    def test_ti_update_state_to_success_outlet_event_partition_key_validation(
+        self, client, session, create_task_instance, partition_key, expected_status
+    ):
+        """Outlet event partition_key content is validated server-side; invalid keys return 422."""
+        ti = create_task_instance(
+            task_id="test_outlet_event_partition_key_validation",
+            start_date=DEFAULT_START_DATE,
+            state=State.RUNNING,
+        )
+        session.commit()
+
+        response = client.patch(
+            f"/execution/task-instances/{ti.id}/state",
+            json={
+                "state": "success",
+                "end_date": DEFAULT_END_DATE.isoformat(),
+                "task_outlets": [],
+                "outlet_events": [
+                    {
+                        "dest_asset_key": {"name": "my-asset", "uri": "s3://bucket/my-asset"},
+                        "extra": {},
+                        "partition_key": partition_key,
+                    }
+                ],
+            },
+        )
+        assert response.status_code == expected_status
+        if expected_status == 422:
+            detail = response.json()["detail"]
+            assert detail["reason"] == "invalid_partition_key"
 
     def test_ti_update_state_not_found(self, client, session):
         """
@@ -1424,7 +1748,64 @@ class TestTIUpdateState:
             mock_register_asset_changes_in_db.return_value = None
             response = client.patch(f"/execution/task-instances/{ti.id}/state", json=payload)
             assert response.status_code == 500
-            assert response.json()["detail"] == "Database error occurred"
+            detail = response.json()["detail"]
+            assert isinstance(detail, dict)
+            assert detail.get("reason") == "Database error"
+
+    def test_ti_run_database_error(self, client, session, create_task_instance):
+        """
+        Test that a database error is handled correctly when starting the Task Instance.
+        """
+        ti = create_task_instance(
+            task_id="test_ti_run_database_error",
+            state=State.QUEUED,
+            dagrun_state=DagRunState.RUNNING,
+            session=session,
+            dag_id=str(uuid4()),
+        )
+        session.commit()
+
+        payload = {
+            "state": "running",
+            "hostname": "hostname",
+            "unixname": "unixname",
+            "pid": 123,
+            "start_date": "2024-10-31T12:00:00Z",
+        }
+
+        with mock.patch(
+            "airflow.api_fastapi.common.db.common.Session.execute",
+            side_effect=[
+                mock.Mock(
+                    one=mock.Mock(
+                        return_value=SimpleNamespace(
+                            state="queued",
+                            dag_id="dag",
+                            run_id="run",
+                            task_id="task",
+                            map_index=-1,
+                            try_number=1,
+                            max_tries=0,
+                            start_date=None,
+                            next_method=None,
+                            hostname=None,
+                            unixname=None,
+                            pid=None,
+                            next_kwargs=None,
+                            logical_date=timezone.utcnow(),
+                            owners="test_owner",
+                        )
+                    )
+                ),
+                SQLAlchemyError("Database error"),
+            ],
+        ):
+            response = client.patch(f"/execution/task-instances/{ti.id}/run", json=payload)
+
+        assert response.status_code == 500
+        detail = response.json()["detail"]
+        assert isinstance(detail, dict)
+        assert detail.get("reason") == "Database error"
 
     @pytest.mark.parametrize("queues_enabled", [False, True])
     def test_ti_update_state_to_deferred(
@@ -1675,6 +2056,85 @@ class TestTIUpdateState:
         ti = session.get(TaskInstance, ti.id)
         assert ti.state == State.FAILED
 
+    # DataError handling: an oversized field the DB rejects must surface as 422 (not an opaque 500
+    # or a silent mark-FAILED). Only MySQL/Postgres enforce varchar limits; SQLite ignores them.
+    @pytest.mark.backend("mysql", "postgres")
+    def test_ti_run_oversized_field_returns_422(self, client, session, create_task_instance):
+        """ti_run: a DataError on the running-state UPDATE surfaces as 422, not 500."""
+        ti = create_task_instance(
+            task_id="test_ti_run_dataerror",
+            state=State.QUEUED,
+            dagrun_state=DagRunState.RUNNING,
+            session=session,
+            dag_id=str(uuid4()),
+        )
+        session.commit()
+
+        response = client.patch(
+            f"/execution/task-instances/{ti.id}/run",
+            json={
+                "state": "running",
+                "hostname": "h" * 1100,  # > hostname varchar(1000)
+                "unixname": "u",
+                "pid": 1,
+                "start_date": "2024-09-30T12:00:00Z",
+            },
+        )
+        assert response.status_code == 422
+        assert response.json()["detail"]["reason"] == "Value rejected by database"
+
+    @pytest.mark.backend("mysql", "postgres")
+    def test_ti_update_state_oversized_field_returns_422(self, client, session, create_task_instance):
+        """ti_update_state: a DataError on the state UPDATE surfaces as 422, not 500."""
+        ti = create_task_instance(
+            task_id="test_ti_update_dataerror",
+            state=State.RUNNING,
+            dagrun_state=DagRunState.RUNNING,
+            session=session,
+            dag_id=str(uuid4()),
+        )
+        session.commit()
+
+        response = client.patch(
+            f"/execution/task-instances/{ti.id}/state",
+            json={
+                "state": "up_for_retry",
+                "end_date": "2024-09-30T12:00:00Z",
+                "rendered_map_index": "x" * 300,  # > rendered_map_index varchar(250)
+            },
+        )
+        assert response.status_code == 422
+        assert response.json()["detail"]["reason"] == "Value rejected by database"
+
+    @pytest.mark.backend("mysql", "postgres")
+    def test_ti_update_state_dataerror_does_not_silently_fail(self, client, session, create_task_instance):
+        """A DataError raised while building the state update must not silently mark the TI FAILED."""
+        ti = create_task_instance(
+            task_id="test_ti_defer_dataerror",
+            state=State.RUNNING,
+            dagrun_state=DagRunState.RUNNING,
+            session=session,
+            dag_id=str(uuid4()),
+        )
+        session.commit()
+
+        response = client.patch(
+            f"/execution/task-instances/{ti.id}/state",
+            json={
+                "state": "deferred",
+                "classpath": "c" * 1100,  # > trigger.classpath varchar(1000)
+                "next_method": "execute_complete",
+                "trigger_kwargs": {},
+                "next_kwargs": {},
+            },
+        )
+        assert response.status_code == 422
+        assert response.json()["detail"]["reason"] == "Value rejected by database"
+
+        # The bare `except Exception` would have marked this FAILED behind the worker's back.
+        session.expire_all()
+        assert session.get(TaskInstance, ti.id).state == State.RUNNING
+
     def test_ti_update_state_handle_retry(self, client, session, create_task_instance):
         ti = create_task_instance(
             task_id="test_ti_update_state_to_retry",
@@ -1736,6 +2196,91 @@ class TestTIUpdateState:
         assert ti.retry_delay_override == 42.5
         assert ti.retry_reason == "Rate limit: backing off"
 
+    def test_ti_update_state_retry_policy_overrides_persisted_in_history(
+        self, client, session, create_task_instance
+    ):
+        """The finished try's values must be archived to task_instance_history.
+
+        record_ti() snapshots columns off the TI object, so the overrides, end_date,
+        and rendered_map_index must be set on the TI before prepare_db_for_next_try()
+        archives it; the live-row UPDATE is not visible to it.
+        """
+        ti = create_task_instance(
+            task_id="test_retry_policy_override_history",
+            state=State.RUNNING,
+        )
+        ti.start_date = DEFAULT_START_DATE
+        session.commit()
+
+        response = client.patch(
+            f"/execution/task-instances/{ti.id}/state",
+            json={
+                "state": State.UP_FOR_RETRY,
+                "end_date": DEFAULT_END_DATE.isoformat(),
+                "rendered_map_index": DEFAULT_RENDERED_MAP_INDEX,
+                "retry_delay_seconds": 42.5,
+                "retry_reason": "Rate limit: backing off",
+            },
+        )
+
+        assert response.status_code == 204
+
+        tih = session.scalars(
+            select(TaskInstanceHistory).where(
+                TaskInstanceHistory.dag_id == ti.dag_id,
+                TaskInstanceHistory.task_id == ti.task_id,
+                TaskInstanceHistory.run_id == ti.run_id,
+            )
+        ).one()
+        assert tih.retry_delay_override == 42.5
+        assert tih.retry_reason == "Rate limit: backing off"
+        assert tih.end_date == DEFAULT_END_DATE
+        assert tih.duration == (DEFAULT_END_DATE - DEFAULT_START_DATE).total_seconds()
+        assert tih.rendered_map_index == DEFAULT_RENDERED_MAP_INDEX
+
+    def test_ti_update_state_retry_clears_rendered_map_index_in_history(
+        self, client, session, create_task_instance
+    ):
+        """An explicit ``rendered_map_index: null`` must clear the value archived to history too.
+
+        The worker sends ``rendered_map_index`` on every retry, even when this try never
+        (re-)computed it (e.g. it failed before rendering). That must null out the archived
+        row along with the live one, not leave the history row snapshotting a stale value
+        left over from an earlier try.
+        """
+        ti = create_task_instance(
+            task_id="test_retry_clears_rendered_map_index_history",
+            state=State.RUNNING,
+        )
+        ti.start_date = DEFAULT_START_DATE
+        ti._rendered_map_index = DEFAULT_RENDERED_MAP_INDEX
+        session.commit()
+
+        response = client.patch(
+            f"/execution/task-instances/{ti.id}/state",
+            json={
+                "state": State.UP_FOR_RETRY,
+                "end_date": DEFAULT_END_DATE.isoformat(),
+                "rendered_map_index": None,
+            },
+        )
+
+        assert response.status_code == 204
+
+        ti = session.scalars(
+            select(TaskInstance).filter_by(task_id=ti.task_id, run_id=ti.run_id, dag_id=ti.dag_id)
+        ).one()
+        assert ti.rendered_map_index is None
+
+        tih = session.scalars(
+            select(TaskInstanceHistory).where(
+                TaskInstanceHistory.dag_id == ti.dag_id,
+                TaskInstanceHistory.task_id == ti.task_id,
+                TaskInstanceHistory.run_id == ti.run_id,
+            )
+        ).one()
+        assert tih.rendered_map_index is None
+
     def test_ti_update_state_retry_without_policy_overrides(self, client, session, create_task_instance):
         """Without retry policy fields, the columns remain NULL."""
         ti = create_task_instance(
@@ -1760,6 +2305,16 @@ class TestTIUpdateState:
         assert ti.state == State.UP_FOR_RETRY
         assert ti.retry_delay_override is None
         assert ti.retry_reason is None
+
+        tih = session.scalars(
+            select(TaskInstanceHistory).where(
+                TaskInstanceHistory.dag_id == ti.dag_id,
+                TaskInstanceHistory.task_id == ti.task_id,
+                TaskInstanceHistory.run_id == ti.run_id,
+            )
+        ).one()
+        assert tih.retry_delay_override is None
+        assert tih.retry_reason is None
 
     def test_ti_run_clears_retry_policy_overrides(self, client, session, create_task_instance):
         """When a task enters RUNNING, retry policy overrides from the previous attempt are cleared."""
@@ -1892,6 +2447,62 @@ class TestTIUpdateState:
         session.refresh(ti)
         assert ti.state == State.SUCCESS
 
+    def test_ti_update_state_same_state_is_idempotent(self, client, session, create_task_instance):
+        """Test that setting a TI to its current state is treated as an idempotent no-op."""
+        ti = create_task_instance(
+            task_id="test_ti_update_state_same_state_is_idempotent",
+            state=State.SUCCESS,
+            session=session,
+            start_date=DEFAULT_START_DATE,
+        )
+        ti.end_date = DEFAULT_END_DATE
+        session.commit()
+
+        response = client.patch(
+            f"/execution/task-instances/{ti.id}/state",
+            json={
+                "state": "success",
+                "end_date": timezone.parse("2024-10-31T13:00:00Z").isoformat(),
+            },
+        )
+        assert response.status_code == 200
+        assert response.content == b""
+
+        session.refresh(ti)
+        assert ti.state == State.SUCCESS
+        assert ti.end_date == DEFAULT_END_DATE
+
+    def test_ti_update_state_terminal_state_mismatch_returns_conflict(
+        self, client, session, create_task_instance
+    ):
+        """A completed TI cannot be updated to a different state."""
+        ti = create_task_instance(
+            task_id="test_ti_update_state_terminal_state_mismatch_returns_conflict",
+            state=State.SUCCESS,
+            session=session,
+            start_date=DEFAULT_START_DATE,
+        )
+        ti.end_date = DEFAULT_END_DATE
+        session.commit()
+
+        response = client.patch(
+            f"/execution/task-instances/{ti.id}/state",
+            json={
+                "state": "failed",
+                "end_date": timezone.parse("2024-10-31T13:00:00Z").isoformat(),
+            },
+        )
+        assert response.status_code == 409
+        assert response.json()["detail"] == {
+            "reason": "invalid_state",
+            "message": "TI was not in the running state so it cannot be updated",
+            "previous_state": State.SUCCESS,
+        }
+
+        session.refresh(ti)
+        assert ti.state == State.SUCCESS
+        assert ti.end_date == DEFAULT_END_DATE
+
     def test_ti_update_state_to_failed_without_fail_fast(self, client, session, dag_maker):
         """Test that SerializedDAG is NOT loaded when fail_fast=False (default)."""
         with dag_maker(dag_id="test_dag_no_fail_fast", serialized=True):
@@ -2023,13 +2634,15 @@ class TestTIUpdateState:
         )
         session.commit()
 
-        backend = MetastoreStoreBackend()
+        backend = MetastoreBackend()
         scope = TaskScope(dag_id=ti.dag_id, run_id=ti.run_id, task_id=ti.task_id, map_index=ti.map_index)
         backend.set(scope, "job_id", "app_1234", session=session)
         backend.set(scope, "checkpoint", "step_3", session=session)
         session.commit()
 
-        assert session.scalars(select(TaskStoreModel).where(TaskStoreModel.task_id == ti.task_id)).all()
+        assert session.scalars(
+            select(TaskStateStoreModel).where(TaskStateStoreModel.task_id == ti.task_id)
+        ).all()
 
         response = client.patch(
             f"/execution/task-instances/{ti.id}/state",
@@ -2038,7 +2651,9 @@ class TestTIUpdateState:
 
         assert response.status_code == 204
         session.expire_all()
-        assert not session.scalars(select(TaskStoreModel).where(TaskStoreModel.task_id == ti.task_id)).all()
+        assert not session.scalars(
+            select(TaskStateStoreModel).where(TaskStateStoreModel.task_id == ti.task_id)
+        ).all()
 
     @pytest.mark.db_test
     @conf_vars({("state_store", "clear_on_success"): "True"})
@@ -2051,7 +2666,7 @@ class TestTIUpdateState:
         )
         session.commit()
 
-        backend = MetastoreStoreBackend()
+        backend = MetastoreBackend()
         scope = TaskScope(dag_id=ti.dag_id, run_id=ti.run_id, task_id=ti.task_id, map_index=ti.map_index)
         backend.set(scope, "job_id", "app_1234", session=session)
         session.commit()
@@ -2063,7 +2678,9 @@ class TestTIUpdateState:
 
         assert response.status_code == 204
         session.expire_all()
-        assert session.scalars(select(TaskStoreModel).where(TaskStoreModel.task_id == ti.task_id)).all()
+        assert session.scalars(
+            select(TaskStateStoreModel).where(TaskStateStoreModel.task_id == ti.task_id)
+        ).all()
 
     @pytest.mark.db_test
     @conf_vars({("state_store", "clear_on_success"): "False"})
@@ -2078,7 +2695,7 @@ class TestTIUpdateState:
         )
         session.commit()
 
-        backend = MetastoreStoreBackend()
+        backend = MetastoreBackend()
         scope = TaskScope(dag_id=ti.dag_id, run_id=ti.run_id, task_id=ti.task_id, map_index=ti.map_index)
         backend.set(scope, "job_id", "app_1234", session=session)
         session.commit()
@@ -2090,7 +2707,9 @@ class TestTIUpdateState:
 
         assert response.status_code == 204
         session.expire_all()
-        assert session.scalars(select(TaskStoreModel).where(TaskStoreModel.task_id == ti.task_id)).all()
+        assert session.scalars(
+            select(TaskStateStoreModel).where(TaskStateStoreModel.task_id == ti.task_id)
+        ).all()
 
 
 class TestTISkipDownstream:
@@ -2610,7 +3229,37 @@ class TestTIPutRTIF:
         random_id = uuid6.uuid7()
         response = client.put(f"/execution/task-instances/{random_id}/rtif", json=payload)
         assert response.status_code == 404
-        assert response.json()["detail"] == "Not Found"
+        assert response.json()["detail"] == {
+            "reason": "not_found",
+            "message": "Task Instance not found",
+        }
+
+    def test_ti_put_rtif_archived_ti_returns_410(self, client, session, create_task_instance):
+        ti = create_task_instance(
+            task_id="test_ti_put_rtif_archived",
+            state=State.RUNNING,
+            session=session,
+        )
+        session.commit()
+        old_ti_id = ti.id
+
+        # Archive the current try to TIH and assign a new UUID, mirroring prepare_db_for_next_try().
+        ti.prepare_db_for_next_try(session)
+        session.commit()
+
+        assert session.get(TaskInstance, old_ti_id) is None
+        assert session.get(TaskInstanceHistory, old_ti_id) is not None
+
+        response = client.put(
+            f"/execution/task-instances/{old_ti_id}/rtif",
+            json={"field1": "rendered_value1"},
+        )
+
+        assert response.status_code == 410
+        assert response.json()["detail"] == {
+            "reason": "not_found",
+            "message": "Task Instance not found, it may have been moved to the Task Instance History table",
+        }
 
 
 class TestPreviousDagRun:
@@ -4061,3 +4710,19 @@ class TestEmitTaskSpan:
 
         _emit_task_span(ti, TaskInstanceState.SUCCESS)
         assert len(self.exporter.get_finished_spans()) == 0
+
+    @pytest.mark.parametrize(
+        ("trace_flag", "expected_spans"),
+        [
+            pytest.param("01", 1, id="sampled-carrier-emits"),
+            pytest.param("00", 0, id="unsampled-carrier-skips"),
+        ],
+    )
+    def test_emit_task_span_honors_dagrun_carrier_sampling(self, trace_flag, expected_spans):
+        """A SAMPLED dag_run carrier (flag 01) emits the task span; an unsampled one (flag 00) is head-sampled out."""
+        ti = self._make_ti()
+        ti.dag_run.context_carrier = {
+            "traceparent": f"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-{trace_flag}"
+        }
+        _emit_task_span(ti, TaskInstanceState.SUCCESS)
+        assert len(self.exporter.get_finished_spans()) == expected_spans

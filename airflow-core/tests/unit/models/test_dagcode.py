@@ -77,10 +77,10 @@ class TestDagCode:
 
     def _write_two_example_dags(self, session):
         example_dags = make_example_dags(example_dags_module)
-        bash_dag = example_dags["example_bash_operator"]
-        sync_dag_to_db(bash_dag, session=session)
-        dag_version = DagVersion.get_latest_version("example_bash_operator")
-        x = DagCode(dag_version, bash_dag.fileloc)
+        xcomargs_dag = example_dags["example_xcom_args"]
+        sync_dag_to_db(xcomargs_dag, session=session)
+        dag_version = DagVersion.get_latest_version("example_xcom_args")
+        x = DagCode(dag_version, xcomargs_dag.fileloc)
         session.add(x)
         session.commit()
         xcom_dag = example_dags["example_xcom"]
@@ -89,7 +89,7 @@ class TestDagCode:
         x = DagCode(dag_version, xcom_dag.fileloc)
         session.add(x)
         session.commit()
-        return [bash_dag, xcom_dag]
+        return [xcomargs_dag, xcom_dag]
 
     def _write_example_dags(self):
         example_dags = make_example_dags(example_dags_module)
@@ -133,7 +133,9 @@ class TestDagCode:
         Test that code can be retrieved from DB when you do not have access to Code file.
         Source Code should at least exist in one of DB or File.
         """
-        example_dag = make_example_dags(example_dags_module).get("example_bash_operator")
+        from airflow.providers.standard import example_dags
+
+        example_dag = make_example_dags(example_dags).get("example_bash_operator")
         sync_dag_to_db(example_dag)
 
         # Mock that there is no access to the Dag File
@@ -146,7 +148,9 @@ class TestDagCode:
 
     def test_db_code_created_on_serdag_change(self, session, testing_dag_bundle):
         """Test new DagCode is created in DB when ser dag is changed"""
-        example_dag = make_example_dags(example_dags_module).get("example_bash_operator")
+        from airflow.providers.standard import example_dags
+
+        example_dag = make_example_dags(example_dags).get("example_bash_operator")
         sync_dag_to_db(example_dag, session=session).create_dagrun(
             run_id="test1",
             run_after=pendulum.datetime(2025, 1, 1, tz="UTC"),
@@ -210,3 +214,51 @@ class TestDagCode:
         DagCode.update_source_code(dag.dag_id, dag.fileloc)
         dag_code3 = DagCode.get_latest_dagcode(dag.dag_id)
         assert dag_code3.source_code_hash != 2
+
+    def test_update_source_code_refreshes_fileloc(self, dag_maker, session):
+        """When the source changes, update_source_code also refreshes a stale fileloc."""
+        with dag_maker("dag_fileloc") as dag:
+
+            @task_decorator
+            def mytask():
+                print("hi")
+
+            mytask()
+        sync_dag_to_db(dag)
+
+        dag_code = DagCode.get_latest_dagcode(dag.dag_id)
+        # Simulate a stale fileloc and a changed source so the update path is taken.
+        dag_code.fileloc = "/old/stale/path.py"
+        dag_code.source_code_hash = "stalehash"
+        session.add(dag_code)
+        session.commit()
+
+        DagCode.update_source_code(dag.dag_id, dag.fileloc)
+
+        refreshed = DagCode.get_latest_dagcode(dag.dag_id)
+        assert refreshed.fileloc == dag.fileloc
+        assert refreshed.source_code_hash != "stalehash"
+
+    def test_update_source_code_refreshes_fileloc_when_source_unchanged(self, dag_maker, session):
+        """A moved/renamed file with identical contents still refreshes a stale fileloc."""
+        with dag_maker("dag_fileloc_moved") as dag:
+
+            @task_decorator
+            def mytask():
+                print("hi")
+
+            mytask()
+        sync_dag_to_db(dag)
+
+        dag_code = DagCode.get_latest_dagcode(dag.dag_id)
+        # Stale fileloc but the stored source hash still matches the file contents.
+        dag_code.fileloc = "/old/stale/path.py"
+        session.add(dag_code)
+        session.commit()
+        original_hash = dag_code.source_code_hash
+
+        DagCode.update_source_code(dag.dag_id, dag.fileloc)
+
+        refreshed = DagCode.get_latest_dagcode(dag.dag_id)
+        assert refreshed.fileloc == dag.fileloc
+        assert refreshed.source_code_hash == original_hash

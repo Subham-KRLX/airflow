@@ -8,8 +8,25 @@
     },
     "filters": {
       "eventType": "Tipus d'esdeveniment"
+    }
+  },
+  "deadlines": {
+    "columns": {
+      "alertName": "Nom de l'alerta",
+      "deadlineTime": "Hora del termini",
+      "status": "Estat"
     },
-    "title": "Registre d'auditoria"
+    "deadline_one": "Termini",
+    "deadline_other": "Terminis",
+    "filters": {
+      "status": "Estat",
+      "statusOptions": {
+        "all": "Tots",
+        "missed": "Vençut",
+        "pending": "Pendent"
+      }
+    },
+    "title": "Terminis"
   },
   "xcom": {
     "add": {

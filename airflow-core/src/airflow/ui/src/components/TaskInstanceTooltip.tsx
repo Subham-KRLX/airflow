@@ -24,8 +24,11 @@ import type {
   TaskInstanceHistoryResponse,
   TaskInstanceResponse,
 } from "openapi/requests/types.gen";
+
+import { Tooltip, type TooltipProps } from "src/system-components";
+
 import Time from "src/components/Time";
-import { Tooltip, type TooltipProps } from "src/components/ui";
+
 import { getDuration, renderDuration, sortStateEntries } from "src/utils";
 
 /** Grid summary plus optional schedule/queue hints (e.g. Gantt segment tooltips). */
@@ -37,14 +40,12 @@ type LightGridTaskInstanceSummaryWithWhen = {
 type Props = {
   readonly runId?: string | null;
   readonly taskInstance?:
-    | LightGridTaskInstanceSummaryWithWhen
-    | TaskInstanceHistoryResponse
-    | TaskInstanceResponse;
+    LightGridTaskInstanceSummaryWithWhen | TaskInstanceHistoryResponse | TaskInstanceResponse;
   readonly tooltip?: string | null;
 } & Omit<TooltipProps, "content">;
 
 const TaskInstanceTooltip = ({ children, positioning, runId, taskInstance, tooltip, ...rest }: Props) => {
-  const { t: translate } = useTranslation("common");
+  const { t: translate } = useTranslation();
 
   const hasTooltip = tooltip !== undefined && tooltip !== null;
 

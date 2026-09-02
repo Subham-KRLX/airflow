@@ -8,8 +8,25 @@
     },
     "filters": {
       "eventType": "इवेंट प्रकार"
+    }
+  },
+  "deadlines": {
+    "columns": {
+      "alertName": "अलर्ट नाम",
+      "deadlineTime": "डेडलाइन समय",
+      "status": "स्थिति"
     },
-    "title": "ऑडिट लॉग"
+    "deadline_one": "डेडलाइन",
+    "deadline_other": "डेडलाइन्स",
+    "filters": {
+      "status": "स्थिति",
+      "statusOptions": {
+        "all": "सभी",
+        "missed": "छूट गई",
+        "pending": "लंबित"
+      }
+    },
+    "title": "डेडलाइन"
   },
   "xcom": {
     "add": {

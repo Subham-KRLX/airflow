@@ -34,7 +34,12 @@ WORKFLOW_NAME_MAPS = {
     "publish-docs": "publish-docs-to-s3.yml",
     "airflow-refresh-site": "build.yml",
     "sync-s3-to-github": "s3-to-github.yml",
+    "release-constraints": "release-constraints.yml",
 }
+
+# X.Y.Z or X.Y.ZrcN - the workflow derives the release stage from which of the two it is given,
+# so there is no separate switch that could disagree with the version.
+RELEASE_VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+(rc\d+)?$")
 
 APACHE_AIRFLOW_REPO = "apache/airflow"
 APACHE_AIRFLOW_SITE_REPO = "apache/airflow-site"
@@ -98,8 +103,11 @@ def workflow_run_group():
 )
 @click.option(
     "--workflow-branch",
-    help="Branch to run the workflow on. Defaults to 'main'.",
-    default="main",
+    help="Git ref the workflow DEFINITION runs from. Defaults to the value of --ref, so the "
+    "workflow version matches the content being built (running main's workflow against an "
+    "older tag breaks when inputs/jobs have since changed). Pass an explicit ref to override "
+    "(e.g. 'main').",
+    default=None,
     type=str,
 )
 @click.option(
@@ -118,9 +126,14 @@ def workflow_run_publish(
     airflow_version: str | None = None,
     airflow_base_version: str | None = None,
     apply_commits: str | None = None,
-    workflow_branch: str = "main",
+    workflow_branch: str | None = None,
     ignore_missing_inventories: bool = False,
 ):
+    # Default the workflow-definition ref to the ref being built, so the workflow version
+    # matches the content. Running main's workflow against an older tag breaks when the
+    # workflow's inputs/jobs have changed since that tag (e.g. a newly required input).
+    if workflow_branch is None:
+        workflow_branch = ref
     if len(doc_packages) == 0:
         console_print(
             "[red]Error: No doc packages provided. Please provide at least one doc package.[/red]",
@@ -263,4 +276,43 @@ def workflow_run_publish(
         branch=branch,
         **workflow_fields,
         monitor=False,
+    )
+
+
+@workflow_run_group.command(
+    name="release-constraints",
+    help="Trigger the workflow that resolves, publishes and tags the constraints for a release.",
+)
+@click.option(
+    "--version",
+    help="Version the constraints belong to. A candidate (3.1.3rc1) resolves with pre-releases "
+    "allowed and lands on a branch of its own; a final (3.1.3) resolves without them and commits "
+    "onto constraints-X-Y. The stage is derived from this, so it cannot be set inconsistently.",
+    required=True,
+)
+@click.option(
+    "--ref",
+    help="Git ref the constraints are resolved from, e.g. 'v3-1-stable' or the release tag.",
+    required=True,
+)
+@click.option(
+    "--workflow-branch",
+    help="Git ref the workflow DEFINITION runs from. Defaults to 'main', which is normally what "
+    "you want: unlike the docs build, the constraints do not have to be produced by the workflow "
+    "as it stood at the ref being released.",
+    default="main",
+    show_default=True,
+)
+def workflow_run_release_constraints(version: str, ref: str, workflow_branch: str):
+    if not RELEASE_VERSION_PATTERN.match(version):
+        console_print(f"[red]Error: '{version}' is not a release version - expected X.Y.Z or X.Y.ZrcN.[/red]")
+        sys.exit(1)
+    stage = "candidate" if "rc" in version else "final"
+    console_print(f"[blue]Triggering constraints generation for the {stage} {version} from {ref}[/blue]")
+    trigger_workflow_and_monitor(
+        workflow_name=WORKFLOW_NAME_MAPS["release-constraints"],
+        repo=APACHE_AIRFLOW_REPO,
+        branch=workflow_branch,
+        version=version,
+        ref=ref,
     )

@@ -27,6 +27,30 @@
 Changelog
 ---------
 
+3.15.2
+......
+
+Bug Fixes
+~~~~~~~~~
+
+* ``Close FTP file handles when a transfer raises (#69083)``
+
+.. Below changes are excluded from the changelog. Move them to
+   appropriate section above if needed. Do not delete the lines(!):
+   * ``Document each provider's optional extras in its docs index (#69478)``
+   * ``Fix inconsistency between generated provider docs and pyproject.toml (#68991)``
+
+3.15.1
+......
+
+Bug Fixes
+~~~~~~~~~
+
+* ``Enable the protected data channel in 'FTPSHook' by calling 'prot_p()' after login (#67946)``
+
+.. Below changes are excluded from the changelog. Move them to
+   appropriate section above if needed. Do not delete the lines(!):
+
 3.15.0
 ......
 
@@ -202,7 +226,7 @@ Misc
 ......
 
 .. note::
-  This version has no code changes. It's released due to yank of previous version due to packaging issues.
+  This version contains no code changes. It was released to replace a previous version that was yanked due to a packaging issue.
 
 3.12.1
 ......

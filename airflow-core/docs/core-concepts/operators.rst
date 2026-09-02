@@ -33,7 +33,7 @@ Airflow has a very extensive set of operators available, with some built-in to t
 - Use the ``@task`` decorator to execute an arbitrary Python function. It doesn't support rendering jinja templates passed as arguments.
 
 .. note::
-    The ``@task`` decorator is recommended over the classic :class:`~airflow.providers.standard.operators.python.PythonOperator`
+    The ``@task`` decorator is the Taskflow equivalent of :class:`~airflow.providers.standard.operators.python.PythonOperator`
     to execute Python callables with no template rendering in its arguments.
 
 For a list of all core operators, see: :doc:`Core Operators and Hooks Reference </operators-and-hooks-ref>`.
@@ -302,6 +302,13 @@ Alternatively, Jinja can also be instructed to render a native Python object. Th
             op_kwargs={"order_data": "{{ ti.xcom_pull('extract') }}"},
             python_callable=transform,
         )
+
+.. note::
+
+    ``NativeEnvironment`` renders values according to Python literal rules. This is useful when a template
+    should produce a list, dict, number, or boolean, but it also means a string that looks like a number,
+    such as ``"42"``, can be rendered as the integer ``42``. Keep the default string rendering, use a
+    callable template field, or add explicit quoting if the task needs the value to stay a string.
 
 
 .. _concepts:reserved-keywords:

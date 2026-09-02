@@ -38,19 +38,23 @@ from airflow.serialization.definitions.deadline import (
     DeadlineAlertFields,
     SerializedDeadlineAlert,
     SerializedReferenceModels,
+    SerializedVariableInterval,
 )
 from airflow.serialization.enums import DagAttributeTypes as DAT, Encoding
 from airflow.serialization.helpers import (
-    WindowNotSupported,
+    WaitPolicyNotSupported,
     find_registered_custom_partition_mapper,
     find_registered_custom_timetable,
+    find_registered_custom_window,
     is_core_partition_mapper_import_path,
     is_core_timetable_import_path,
+    is_core_wait_policy_import_path,
     is_core_window_import_path,
 )
 
 if TYPE_CHECKING:
     from airflow.partition_mappers.base import PartitionMapper
+    from airflow.partition_mappers.wait_policy import WaitPolicy
     from airflow.partition_mappers.window import Window
     from airflow.timetables.base import Timetable as CoreTimetable
 
@@ -87,9 +91,28 @@ def smart_decode_trigger_kwargs(d):
     """
     from airflow.serialization.serialized_objects import BaseSerialization
 
-    if not isinstance(d, dict) or Encoding.TYPE not in d:
+    d = _normalize_stringified_encoding_keys(d)
+    if not isinstance(d, dict):
         return d
-    return BaseSerialization.deserialize(d)
+    if Encoding.TYPE in d and Encoding.VAR in d:
+        return BaseSerialization.deserialize(d)
+    return {k: smart_decode_trigger_kwargs(v) for k, v in d.items()}
+
+
+def _normalize_stringified_encoding_keys(value):
+    if isinstance(value, list):
+        return [_normalize_stringified_encoding_keys(v) for v in value]
+    if not isinstance(value, dict):
+        return value
+
+    if str(Encoding.TYPE) in value and str(Encoding.VAR) in value:
+        return {
+            Encoding.TYPE if k == str(Encoding.TYPE) else Encoding.VAR if k == str(Encoding.VAR) else k: (
+                _normalize_stringified_encoding_keys(v)
+            )
+            for k, v in value.items()
+        }
+    return {k: _normalize_stringified_encoding_keys(v) for k, v in value.items()}
 
 
 def _decode_asset(var: dict[str, Any]):
@@ -105,6 +128,7 @@ def _decode_asset(var: dict[str, Any]):
                 trigger={
                     "classpath": watcher["trigger"]["classpath"],
                     "kwargs": smart_decode_trigger_kwargs(watcher["trigger"]["kwargs"]),
+                    **({"queue": watcher["trigger"]["queue"]} if "queue" in watcher["trigger"] else {}),
                 },
             )
             for watcher in watchers
@@ -145,7 +169,12 @@ def decode_deadline_reference(reference_data: dict):
     """Decode a previously serialized deadline reference."""
     ref_name = reference_data.get(SerializedReferenceModels.REFERENCE_TYPE_FIELD)
 
-    if ref_name and SerializedReferenceModels.is_builtin_reference(ref_name):
+    # A custom reference may share a name with a builtin, so ``__class_path`` wins.
+    if "__class_path" in reference_data:
+        reference_class: type[SerializedReferenceModels.SerializedBaseDeadlineReference] = (
+            SerializedReferenceModels.SerializedCustomReference
+        )
+    elif ref_name and SerializedReferenceModels.is_builtin_reference(ref_name):
         reference_class = SerializedReferenceModels.get_reference_class(ref_name)
     else:
         reference_class = SerializedReferenceModels.SerializedCustomReference
@@ -175,7 +204,7 @@ def decode_deadline_alert(encoded_data: dict):
             "from a version that supports VariableInterval. Downgrade is not fully reversible."
         )
 
-    interval: datetime.timedelta | VariableInterval
+    interval: datetime.timedelta | SerializedVariableInterval
 
     # Backward compatibility: previously interval was stored as total_seconds() (float/int).
     # Handle numeric values by converting to timedelta.
@@ -183,8 +212,13 @@ def decode_deadline_alert(encoded_data: dict):
         interval = datetime.timedelta(seconds=raw_interval)
     else:
         deserialized = deserialize(raw_interval)
-        if isinstance(deserialized, (datetime.timedelta, VariableInterval)):
+
+        if isinstance(deserialized, datetime.timedelta):
             interval = deserialized
+        elif isinstance(deserialized, SerializedVariableInterval):
+            interval = deserialized
+        elif isinstance(deserialized, VariableInterval):
+            interval = SerializedVariableInterval(key=deserialized.key)
         else:
             raise TypeError(f"Invalid interval type: {type(deserialized).__name__}")
 
@@ -233,15 +267,34 @@ def decode_window(var: dict[str, Any]) -> Window:
     """
     Decode a previously serialized :class:`Window`.
 
-    Only built-in windows are accepted — a tampered serialized Dag naming a
-    non-core import path is rejected up-front instead of being handed to
+    Custom windows must be registered via the ``windows`` plugin attribute;
+    unregistered import paths are rejected up-front instead of being handed to
     ``import_string``. See :func:`encode_window` for the matching encode-side
     restriction.
 
     :meta private:
     """
     importable_string = var[Encoding.TYPE]
-    if not is_core_window_import_path(importable_string):
-        raise WindowNotSupported(importable_string)
-    window_cls: type[Window] = import_string(importable_string)
+    if is_core_window_import_path(importable_string):
+        window_cls: type[Window] = import_string(importable_string)
+    else:
+        window_cls = find_registered_custom_window(importable_string)
     return window_cls.deserialize(var[Encoding.VAR])
+
+
+def decode_wait_policy(var: dict[str, Any]) -> WaitPolicy:
+    """
+    Decode a previously serialized :class:`WaitPolicy`.
+
+    Only built-in trigger policies are accepted — a tampered serialized Dag
+    naming a non-core import path is rejected up-front instead of being handed
+    to ``import_string``. See :func:`encode_wait_policy` for the matching
+    encode-side restriction.
+
+    :meta private:
+    """
+    importable_string = var[Encoding.TYPE]
+    if not is_core_wait_policy_import_path(importable_string):
+        raise WaitPolicyNotSupported(importable_string)
+    policy_cls: type[WaitPolicy] = import_string(importable_string)
+    return policy_cls.deserialize(var[Encoding.VAR])

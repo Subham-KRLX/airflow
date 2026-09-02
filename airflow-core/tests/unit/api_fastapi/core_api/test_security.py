@@ -20,12 +20,16 @@ from json import JSONDecodeError
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from jwt import ExpiredSignatureError, InvalidTokenError
+from sqlalchemy.orm import Session
 
+from airflow import settings
 from airflow.api_fastapi.app import create_app
-from airflow.api_fastapi.auth.managers.base_auth_manager import COOKIE_NAME_JWT_TOKEN
+from airflow.api_fastapi.auth.managers.base_auth_manager import COOKIE_NAME_JWT_TOKEN, BaseAuthManager
+from airflow.api_fastapi.auth.managers.models.base_user import BaseUser
 from airflow.api_fastapi.auth.managers.models.resource_details import (
+    AccessView,
     ConnectionDetails,
     DagAccessEntity,
     DagDetails,
@@ -38,6 +42,7 @@ from airflow.api_fastapi.core_api.datamodels.connections import ConnectionBody
 from airflow.api_fastapi.core_api.datamodels.pools import PoolBody
 from airflow.api_fastapi.core_api.datamodels.variables import VariableBody
 from airflow.api_fastapi.core_api.security import (
+    _build_dag_run_access_requests,
     get_user,
     is_safe_url,
     requires_access_backfill,
@@ -53,9 +58,48 @@ from airflow.api_fastapi.core_api.security import (
 )
 from airflow.models import Connection, Pool, Variable
 from airflow.models.dag import DagModel
+from airflow.models.dagbundle import DagBundleModel
 from airflow.models.team import Team
 
+from tests_common.test_utils.asserts import assert_queries_count
 from tests_common.test_utils.config import conf_vars
+from tests_common.test_utils.db import clear_db_dag_bundles, clear_db_dags
+
+
+@pytest.mark.db_test
+def test_build_dag_run_access_requests_batches_team_lookup():
+    """The bulk dag-run team resolution must be a single query regardless of Dag count (no N+1)."""
+    entity_methods = [(f"dag_{i}", "GET") for i in range(25)]
+    with assert_queries_count(1):
+        requests = _build_dag_run_access_requests(entity_methods)
+    assert len(requests) == 25
+
+
+@pytest.mark.db_test
+def test_build_dag_run_access_requests_empty_skips_query():
+    with assert_queries_count(0):
+        assert _build_dag_run_access_requests([]) == []
+
+
+@pytest.mark.db_test
+def test_build_dag_run_access_requests_includes_team_name(testing_team):
+    """A team-owned Dag must surface its team name in the generated access request."""
+    session = settings.Session()
+    bundle = DagBundleModel(name="team-owned-bundle")
+    bundle.teams.append(testing_team)
+    session.add(bundle)
+    session.flush()
+    session.add(DagModel(dag_id="team_owned_dag", bundle_name="team-owned-bundle", is_stale=False))
+    session.flush()
+    try:
+        requests = _build_dag_run_access_requests([("team_owned_dag", "GET")])
+    finally:
+        clear_db_dags()
+        clear_db_dag_bundles()
+
+    assert len(requests) == 1
+    assert requests[0]["details"].id == "team_owned_dag"
+    assert requests[0]["details"].team_name == "testing"
 
 
 @pytest.mark.asyncio
@@ -297,10 +341,8 @@ class TestFastApiSecurity:
         mock_get_auth_manager.return_value = auth_manager
         mock_get_team_name.return_value = "team1"
 
-        backfill = Mock()
-        backfill.dag_id = "backfill_dag_id"
         session = Mock()
-        session.scalars.return_value.one_or_none.return_value = backfill
+        session.scalar.return_value = "backfill_dag_id"
 
         request = Mock()
         request.path_params = {"backfill_id": "42"}
@@ -325,14 +367,13 @@ class TestFastApiSecurity:
     async def test_requires_access_backfill_authorized_from_body(
         self, mock_get_auth_manager, mock_get_team_name
     ):
-        """When backfill_id is missing or not int, dag_id can come from request body (POST backfill)."""
+        """With no backfill_id in the path, dag_id comes from the request body (POST backfill)."""
         auth_manager = Mock()
         auth_manager.is_authorized_dag.return_value = True
         mock_get_auth_manager.return_value = auth_manager
         mock_get_team_name.return_value = "team1"
 
         session = Mock()
-        session.scalars.return_value.one_or_none.return_value = None
 
         request = Mock()
         request.path_params = {}
@@ -355,25 +396,25 @@ class TestFastApiSecurity:
     @patch.object(DagModel, "get_team_name")
     @patch("airflow.api_fastapi.core_api.security.get_auth_manager")
     async def test_requires_access_backfill_unauthorized(self, mock_get_auth_manager, mock_get_team_name):
-        """When is_authorized_dag returns False, Forbidden is raised."""
+        """A caller who may not read the backfill's Dag is told it does not exist."""
         auth_manager = Mock()
         auth_manager.is_authorized_dag.return_value = False
         mock_get_auth_manager.return_value = auth_manager
         mock_get_team_name.return_value = None
 
-        backfill = Mock()
-        backfill.dag_id = "unauthorized_dag"
         session = Mock()
-        session.scalars.return_value.one_or_none.return_value = backfill
+        session.scalar.return_value = "unauthorized_dag"
 
         request = Mock()
         request.path_params = {"backfill_id": "1"}
         user = Mock()
 
         inner = requires_access_backfill("GET")
-        with pytest.raises(HTTPException, match="Forbidden"):
+        with pytest.raises(HTTPException) as exc_info:
             await inner(request, user, session)
 
+        assert exc_info.value.status_code == 404
+        assert exc_info.value.detail == "Backfill not found"
         auth_manager.is_authorized_dag.assert_called_once_with(
             method="GET",
             access_entity=DagAccessEntity.RUN,
@@ -385,31 +426,94 @@ class TestFastApiSecurity:
     @pytest.mark.asyncio
     @patch.object(DagModel, "get_team_name")
     @patch("airflow.api_fastapi.core_api.security.get_auth_manager")
-    async def test_requires_access_backfill_backfill_not_found_falls_back_to_body(
+    async def test_requires_access_backfill_forbidden_when_the_dag_is_readable(
         self, mock_get_auth_manager, mock_get_team_name
     ):
-        """When backfill_id is int but Backfill not found, dag_id from body is used."""
-        auth_manager = Mock()
+        """A caller who may read the Dag but not write it keeps the Forbidden answer."""
+        auth_manager = Mock(spec=BaseAuthManager)
+        auth_manager.is_authorized_dag.side_effect = lambda *, method, **kwargs: method == "GET"
+        mock_get_auth_manager.return_value = auth_manager
+        mock_get_team_name.return_value = None
+
+        session = Mock(spec=Session)
+        session.scalar.return_value = "readable_dag"
+
+        request = Mock(spec=Request)
+        request.path_params = {"backfill_id": "1"}
+        user = Mock(spec=BaseUser)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await requires_access_backfill("PUT")(request, user, session)
+
+        assert exc_info.value.status_code == 403
+
+    @pytest.mark.db_test
+    @pytest.mark.asyncio
+    @patch.object(DagModel, "get_team_name")
+    @patch("airflow.api_fastapi.core_api.security.get_auth_manager")
+    async def test_requires_access_backfill_unknown_id_ignores_the_request_dag_id(
+        self, mock_get_auth_manager, mock_get_team_name
+    ):
+        """An unknown backfill is not authorized against a Dag the caller names."""
+        auth_manager = Mock(spec=BaseAuthManager)
         auth_manager.is_authorized_dag.return_value = True
         mock_get_auth_manager.return_value = auth_manager
         mock_get_team_name.return_value = "team1"
 
-        session = Mock()
-        session.scalars.return_value.one_or_none.return_value = None
+        session = Mock(spec=Session)
+        session.scalar.return_value = None
 
-        request = Mock()
+        request = Mock(spec=Request)
         request.path_params = {"backfill_id": "999"}
-        request.json = AsyncMock(return_value={"dag_id": "fallback_dag_id"})
+        request.query_params = {"dag_id": "caller_dag_id"}
+        request.json = AsyncMock(return_value={"dag_id": "caller_dag_id"})
 
-        user = Mock()
+        user = Mock(spec=BaseUser)
 
-        inner = requires_access_backfill("POST")
-        await inner(request, user, session)
+        with pytest.raises(HTTPException) as exc_info:
+            await requires_access_backfill("PUT")(request, user, session)
 
+        assert exc_info.value.status_code == 404
+        assert exc_info.value.detail == "Backfill not found"
+        auth_manager.is_authorized_dag.assert_not_called()
+
+    @pytest.mark.db_test
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("backfill_id", ["42", "42.0", "42.00"])
+    @patch.object(DagModel, "get_team_name")
+    @patch("airflow.api_fastapi.core_api.security.get_auth_manager")
+    async def test_requires_access_backfill_authorizes_the_backfill_the_handler_will_act_on(
+        self, mock_get_auth_manager, mock_get_team_name, backfill_id
+    ):
+        """The dependency must resolve the same backfill the handler does, for every spelling.
+
+        The endpoints declare ``backfill_id: NonNegativeInt``, and pydantic's lax mode coerces
+        ``"42.0"`` and ``"42.00"`` to ``42`` -- both are spellings the handler accepts and serves
+        against backfill 42. Parsing with ``int()`` here rejected them and left ``dag_id``
+        unresolved, so the two disagreed about which Dag the request concerned.
+        """
+        auth_manager = Mock(spec=BaseAuthManager)
+        auth_manager.is_authorized_dag.return_value = True
+        mock_get_auth_manager.return_value = auth_manager
+        mock_get_team_name.return_value = "team1"
+
+        session = Mock(spec=Session)
+        session.scalar.return_value = "backfill_dag"
+
+        request = Mock(spec=Request)
+        request.path_params = {"backfill_id": backfill_id}
+        request.query_params = {"dag_id": "some_other_dag"}
+        request.json = AsyncMock(return_value={"dag_id": "some_other_dag"})
+
+        user = Mock(spec=BaseUser)
+
+        await requires_access_backfill("PUT")(request, user, session)
+
+        # the backfill's own Dag, not the one supplied on the request
         auth_manager.is_authorized_dag.assert_called_once_with(
-            method="POST",
+            method="PUT",
             access_entity=DagAccessEntity.RUN,
-            details=DagDetails(id="fallback_dag_id", team_name="team1"),
+            details=DagDetails(id="backfill_dag", team_name="team1"),
             user=user,
         )
 
@@ -427,7 +531,7 @@ class TestFastApiSecurity:
         mock_get_team_name.return_value = "team1"
 
         session = Mock()
-        session.scalar.return_value = "event_log_dag_id"
+        session.execute.return_value.one_or_none.return_value = Mock(id=42, dag_id="event_log_dag_id")
 
         request = Mock()
         request.path_params = {"event_log_id": "42"}
@@ -455,7 +559,7 @@ class TestFastApiSecurity:
         mock_get_team_name.return_value = None
 
         session = Mock()
-        session.scalar.return_value = "unauthorized_dag"
+        session.execute.return_value.one_or_none.return_value = Mock(id=1, dag_id="unauthorized_dag")
 
         request = Mock()
         request.path_params = {"event_log_id": "1"}
@@ -483,7 +587,7 @@ class TestFastApiSecurity:
         mock_get_auth_manager.return_value = auth_manager
 
         session = Mock()
-        session.scalar.return_value = None
+        session.execute.return_value.one_or_none.return_value = None
 
         request = Mock()
         request.path_params = {"event_log_id": "999"}
@@ -500,6 +604,56 @@ class TestFastApiSecurity:
             user=user,
         )
         mock_get_team_name.assert_not_called()
+
+    @pytest.mark.db_test
+    @pytest.mark.asyncio
+    @patch.object(DagModel, "get_team_name")
+    @patch("airflow.api_fastapi.core_api.security.get_auth_manager")
+    async def test_requires_access_event_log_non_dag_row_uses_audit_logs_all(
+        self, mock_get_auth_manager, mock_get_team_name
+    ):
+        """A row that exists with a NULL dag_id is gated on AUDIT_LOGS_ALL, not the Dag check.
+
+        Such a row records an operation that is not tied to a Dag, so there is no per-Dag key
+        to authorize on. It must not fall through to an unscoped ``DagDetails(id=None)`` check,
+        which any caller holding Dag-level audit access would pass.
+        """
+        auth_manager = Mock()
+        auth_manager.authorize_view.return_value = True
+        mock_get_auth_manager.return_value = auth_manager
+
+        session = Mock()
+        session.execute.return_value.one_or_none.return_value = Mock(id=7, dag_id=None)
+
+        request = Mock()
+        request.path_params = {"event_log_id": "7"}
+        request.query_params = {}
+        user = Mock()
+
+        await requires_access_event_log("GET")(request, user, session)
+
+        auth_manager.authorize_view.assert_called_once_with(access_view=AccessView.AUDIT_LOGS_ALL, user=user)
+        auth_manager.is_authorized_dag.assert_not_called()
+        mock_get_team_name.assert_not_called()
+
+    @pytest.mark.db_test
+    @pytest.mark.asyncio
+    @patch("airflow.api_fastapi.core_api.security.get_auth_manager")
+    async def test_requires_access_event_log_non_dag_row_denied(self, mock_get_auth_manager):
+        """Without AUDIT_LOGS_ALL, a non-Dag row is Forbidden rather than returned."""
+        auth_manager = Mock()
+        auth_manager.authorize_view.return_value = False
+        mock_get_auth_manager.return_value = auth_manager
+
+        session = Mock()
+        session.execute.return_value.one_or_none.return_value = Mock(id=7, dag_id=None)
+
+        request = Mock()
+        request.path_params = {"event_log_id": "7"}
+        request.query_params = {}
+
+        with pytest.raises(HTTPException, match="Forbidden"):
+            await requires_access_event_log("GET")(request, Mock(), session)
 
     @pytest.mark.db_test
     @pytest.mark.parametrize("bad_event_log_id", ["abc", "1.5", "1,2", ""])
@@ -591,6 +745,14 @@ class TestFastApiSecurity:
             ("\\\\some_netlock.com/prefix", False),
             # encoded url
             ("%5C%5C%5C%5Csome_netlock.com/prefix", False),
+            # \ after the scheme, which a browser reads as the start of the authority
+            ("https:\\\\some_netlock.com", False),
+            ("https:/\\some_netlock.com", False),
+            ("https:\\/some_netlock.com", False),
+            ("https%3A%5C%5Csome_netlock.com", False),
+            # a single leading \ still resolves to a same-origin path
+            ("\\some_page", True),
+            ("/some_page", True),
         ],
     )
     def test_is_safe_url_without_prefix(self, url, expected_is_safe):
@@ -1221,6 +1383,105 @@ class TestFastApiSecurity:
                     "method": "PUT",
                     "details": PoolDetails(name="pool4", team_name="team1"),
                 },
+            ],
+            user=user,
+        )
+
+    @patch.object(Pool, "get_name_to_team_name_mapping")
+    @patch("airflow.api_fastapi.core_api.security.get_auth_manager")
+    @conf_vars({("core", "multi_team"): "True"})
+    def test_requires_access_pool_bulk_checks_destination_team(
+        self, mock_get_auth_manager, mock_get_name_to_team_name_mapping
+    ):
+        """Bulk UPDATE that changes team_name must authorize the destination team."""
+        auth_manager = Mock()
+        auth_manager.batch_is_authorized_pool.return_value = True
+        mock_get_auth_manager.return_value = auth_manager
+        mock_get_name_to_team_name_mapping.return_value = {"pool1": "team_b"}
+
+        request = BulkBody[PoolBody].model_validate(
+            {
+                "actions": [
+                    {
+                        "action": "update",
+                        "entities": [{"pool": "pool1", "slots": 5, "team_name": "team_a"}],
+                    },
+                ]
+            }
+        )
+        user = Mock()
+        requires_access_pool_bulk()(request, user)
+
+        auth_manager.batch_is_authorized_pool.assert_called_once_with(
+            requests=[
+                {"method": "PUT", "details": PoolDetails(name="pool1", team_name="team_b")},
+                {"method": "PUT", "details": PoolDetails(name="pool1", team_name="team_a")},
+            ],
+            user=user,
+        )
+
+    @patch.object(Connection, "get_conn_id_to_team_name_mapping")
+    @patch("airflow.api_fastapi.core_api.security.get_auth_manager")
+    @conf_vars({("core", "multi_team"): "True"})
+    def test_requires_access_connection_bulk_checks_destination_team(
+        self, mock_get_auth_manager, mock_get_conn_id_to_team_name_mapping
+    ):
+        """Bulk UPDATE that changes team_name must authorize the destination team."""
+        auth_manager = Mock()
+        auth_manager.batch_is_authorized_connection.return_value = True
+        mock_get_auth_manager.return_value = auth_manager
+        mock_get_conn_id_to_team_name_mapping.return_value = {"conn1": "team_b"}
+
+        request = BulkBody[ConnectionBody].model_validate(
+            {
+                "actions": [
+                    {
+                        "action": "update",
+                        "entities": [{"connection_id": "conn1", "conn_type": "http", "team_name": "team_a"}],
+                    },
+                ]
+            }
+        )
+        user = Mock()
+        requires_access_connection_bulk()(request, user)
+
+        auth_manager.batch_is_authorized_connection.assert_called_once_with(
+            requests=[
+                {"method": "PUT", "details": ConnectionDetails(conn_id="conn1", team_name="team_b")},
+                {"method": "PUT", "details": ConnectionDetails(conn_id="conn1", team_name="team_a")},
+            ],
+            user=user,
+        )
+
+    @patch.object(Variable, "get_key_to_team_name_mapping")
+    @patch("airflow.api_fastapi.core_api.security.get_auth_manager")
+    @conf_vars({("core", "multi_team"): "True"})
+    def test_requires_access_variable_bulk_checks_destination_team(
+        self, mock_get_auth_manager, mock_get_key_to_team_name_mapping
+    ):
+        """Bulk UPDATE that changes team_name must authorize the destination team."""
+        auth_manager = Mock()
+        auth_manager.batch_is_authorized_variable.return_value = True
+        mock_get_auth_manager.return_value = auth_manager
+        mock_get_key_to_team_name_mapping.return_value = {"var1": "team_b"}
+
+        request = BulkBody[VariableBody].model_validate(
+            {
+                "actions": [
+                    {
+                        "action": "update",
+                        "entities": [{"key": "var1", "value": "val", "team_name": "team_a"}],
+                    },
+                ]
+            }
+        )
+        user = Mock()
+        requires_access_variable_bulk()(request, user)
+
+        auth_manager.batch_is_authorized_variable.assert_called_once_with(
+            requests=[
+                {"method": "PUT", "details": VariableDetails(key="var1", team_name="team_b")},
+                {"method": "PUT", "details": VariableDetails(key="var1", team_name="team_a")},
             ],
             user=user,
         )
